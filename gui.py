@@ -186,6 +186,7 @@ class GTApp(tk.Tk):
         self._prev_site     = "gt"   # 사이트별 계정 저장용: 직전 사이트 키
         self._initializing  = True   # 복원 중엔 사이트 변경 감지 비활성
         self._acct_list     = []     # 현재 사이트 계정 목록 [(email, pw), ...]
+        self._results_win_txt = None  # "결과 모아보기" 창이 열려있으면 그 Text 위젯 참조
 
         # 설정 로드
         self._settings = _load_settings()
@@ -322,9 +323,10 @@ class GTApp(tk.Tk):
         self.btn_reset  = tk.Button(fr_btn, text="저장값 초기화", command=self._reset_storage, width=10)
 
         self.btn_export = tk.Button(fr_btn, text="로그 저장", command=self._export_log, width=8)
+        self.btn_results = tk.Button(fr_btn, text="결과 모아보기", command=self._show_results_only, width=10, fg="darkgreen")
 
         for b in (self.btn_start, self.btn_pause, self.btn_resume,
-                  self.btn_stop, self.btn_clrlog, self.btn_reset, self.btn_export):
+                  self.btn_stop, self.btn_clrlog, self.btn_reset, self.btn_export, self.btn_results):
             b.pack(side=tk.LEFT, padx=3)
 
         self.lbl_status = tk.Label(fr_btn, text="상태: 대기중", fg="gray")
@@ -571,6 +573,9 @@ class GTApp(tk.Tk):
         # 🎯 스캔 한 바퀴 끝날 때마다 타겟 CSQ를 오픈시간 순으로 정렬 (모르는 건 아래로)
         if msg.startswith("[완료] scan 종료"):
             self.after(0, self._sort_target_by_time)
+        # 📋 "결과 모아보기" 창이 열려있으면 [결과] 로그를 실시간으로도 추가
+        if "[결과]" in msg and self._results_win_txt is not None:
+            self.after(0, self._append_result_line, line)
         # 스킵 로그: 필터만 적용 (축약은 로직에서 이미 처리됨)
         if msg.startswith("[스킵]"):
             if not self.var_show_skip.get():
@@ -611,6 +616,39 @@ class GTApp(tk.Tk):
         self.txt_log.configure(state=tk.NORMAL)
         self.txt_log.delete("1.0", tk.END)
         self.txt_log.configure(state=tk.DISABLED)
+
+    def _append_result_line(self, line: str):
+        if self._results_win_txt is None:
+            return
+        try:
+            self._results_win_txt.insert(tk.END, line)
+            self._results_win_txt.see(tk.END)
+        except tk.TclError:
+            self._results_win_txt = None  # 창이 이미 닫혔으면 참조 정리
+
+    def _show_results_only(self):
+        """지금까지 쌓인 전체 로그에서 [결과] 줄만 뽑아서 별도 창에 모아 보여줌 (창을 열어두면 이후 결과도 실시간 추가)"""
+        win = tk.Toplevel(self)
+        win.title("참여 결과 모음")
+        win.geometry("900x500")
+
+        txt = scrolledtext.ScrolledText(win, font=("Consolas", 10), wrap=tk.WORD)
+        txt.pack(fill=tk.BOTH, expand=True)
+
+        full_log = self.txt_log.get("1.0", tk.END)
+        result_lines = [line for line in full_log.splitlines() if "[결과]" in line]
+        if result_lines:
+            txt.insert(tk.END, "\n".join(result_lines) + "\n")
+        else:
+            txt.insert(tk.END, "(아직 결과 로그가 없습니다)\n")
+        txt.see(tk.END)
+
+        self._results_win_txt = txt
+
+        def _on_close():
+            self._results_win_txt = None
+            win.destroy()
+        win.protocol("WM_DELETE_WINDOW", _on_close)
 
     def _export_log(self):
         from tkinter import filedialog
