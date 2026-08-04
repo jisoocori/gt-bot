@@ -27,6 +27,56 @@ def resource_path(relative_path):
 _LOGIC_FILE = resource_path("sum_260609.py")
 
 
+# ── GitHub 자동 업데이트 ─────────────────────────────────────────────────
+GITHUB_OWNER  = "jisoocori"
+GITHUB_REPO   = "gt-bot"
+GITHUB_BRANCH = "main"
+AUTO_UPDATE_ENABLED = True   # 자동 업데이트를 끄고 싶으면 False로 바꾸세요
+
+def _check_and_apply_updates():
+    """실행 시작 시 GitHub에서 최신 gui.py / sum_260609.py를 받아와 로컬과 다르면 덮어씀.
+       gui.py 자신이 바뀌었으면 새 코드로 즉시 재시작."""
+    if not AUTO_UPDATE_ENABLED:
+        return
+    import urllib.request
+
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    filenames = ["gui.py", "sum_260609.py"]
+    self_updated = False
+
+    for fname in filenames:
+        local_path = os.path.join(base_dir, fname)
+        url = f"https://raw.githubusercontent.com/{GITHUB_OWNER}/{GITHUB_REPO}/{GITHUB_BRANCH}/{fname}"
+        try:
+            with urllib.request.urlopen(url, timeout=5) as resp:
+                remote_bytes = resp.read()
+        except Exception as e:
+            print(f"[업데이트 확인 실패] {fname}: {e}")
+            continue
+        if not remote_bytes:
+            continue
+        try:
+            with open(local_path, "rb") as f:
+                local_bytes = f.read()
+        except FileNotFoundError:
+            local_bytes = b""
+        if remote_bytes != local_bytes:
+            try:
+                with open(local_path, "wb") as f:
+                    f.write(remote_bytes)
+                print(f"[업데이트 적용됨] {fname}")
+                if fname == "gui.py":
+                    self_updated = True
+            except Exception as e:
+                print(f"[업데이트 저장 실패] {fname}: {e}")
+
+    if self_updated:
+        print("gui.py가 갱신되어 재시작합니다...")
+        python = sys.executable
+        os.execv(python, [python] + sys.argv)
+
+_check_and_apply_updates()
+
 
 # ── 로직 모듈 동적 import (같은 폴더 기준) ──────────────────────────────────
 _LOGIC_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sum_260609.py")
