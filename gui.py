@@ -453,10 +453,15 @@ class GTApp(tk.Tk):
         def sort_key(idx_csq):
             idx, csq = idx_csq
             info = self._target_info.get(csq)
-            if info and info.get("open"):
+            if info and info.get("open") and info.get("title"):
+                # 오픈시간+상품명 둘 다 확인됨 → 최우선, 시간순
                 # "MM/DD HH:MM:SS" 형식은 제로패딩되어 있어 문자열 비교로도 시간순 정렬됨
                 return (0, info["open"], idx)
-            return (1, "", idx)
+            if info and info.get("open"):
+                # 오픈시간은 알지만 상품명 미확인 → 그 다음, 시간순
+                return (1, info["open"], idx)
+            # 아직 스캔에서 아예 발견 안 됨 → 맨 아래, 기존 순서 유지
+            return (2, "", idx)
 
         sorted_csqs = [csq for _, csq in sorted(enumerate(target_csqs), key=sort_key)]
         if sorted_csqs == target_csqs:
