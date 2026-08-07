@@ -1,4 +1,6 @@
 # -*- coding: utf-8 -*-
+LOGIC_LAST_MODIFIED = "2026-08-07 15:40"  # ⭐ 이 파일 수정할 때마다 갱신
+
 import os
 import re
 import time
