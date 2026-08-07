@@ -8,7 +8,7 @@ GT 자동 감시 GUI
     python gui.py
 """
 
-GUI_LAST_MODIFIED = "2026-08-07 15:40"  # ⭐ 이 파일 수정할 때마다 갱신
+GUI_LAST_MODIFIED = "2026-08-07 16:25"  # ⭐ 이 파일 수정할 때마다 갱신
 
 import os
 import sys
@@ -40,7 +40,17 @@ def _check_and_apply_updates():
        gui.py 자신이 바뀌었으면 새 코드로 즉시 재시작."""
     if not AUTO_UPDATE_ENABLED:
         return
+    # ⭐ 무한 재시작 방지: 이번 프로세스가 이미 "업데이트 후 재시작"으로 실행된 거면
+    #    또 재시작하지 않고 이번 실행에서는 업데이트 체크를 건너뜀
+    if os.environ.get("GT_BOT_JUST_RESTARTED") == "1":
+        os.environ.pop("GT_BOT_JUST_RESTARTED", None)
+        return
+
     import urllib.request
+
+    def _norm(b: bytes) -> bytes:
+        # ⭐ 줄바꿈 차이(\r\n vs \n)만으로는 "다르다"고 판단하지 않도록 정규화
+        return b.replace(b"\r\n", b"\n")
 
     base_dir = os.path.dirname(os.path.abspath(__file__))
     filenames = ["gui.py", "sum_260609.py"]
@@ -50,7 +60,7 @@ def _check_and_apply_updates():
         local_path = os.path.join(base_dir, fname)
         url = f"https://raw.githubusercontent.com/{GITHUB_OWNER}/{GITHUB_REPO}/{GITHUB_BRANCH}/{fname}"
         try:
-            with urllib.request.urlopen(url, timeout=5) as resp:
+            with urllib.request.urlopen(url, timeout=4) as resp:
                 remote_bytes = resp.read()
         except Exception as e:
             print(f"[업데이트 확인 실패] {fname}: {e}")
@@ -62,7 +72,7 @@ def _check_and_apply_updates():
                 local_bytes = f.read()
         except FileNotFoundError:
             local_bytes = b""
-        if remote_bytes != local_bytes:
+        if _norm(remote_bytes) != _norm(local_bytes):
             try:
                 with open(local_path, "wb") as f:
                     f.write(remote_bytes)
@@ -74,6 +84,7 @@ def _check_and_apply_updates():
 
     if self_updated:
         print("gui.py가 갱신되어 재시작합니다...")
+        os.environ["GT_BOT_JUST_RESTARTED"] = "1"  # 재시작 후엔 업데이트 재확인 안 하도록 표시
         python = sys.executable
         os.execv(python, [python] + sys.argv)
 
@@ -453,18 +464,33 @@ class GTApp(tk.Tk):
         if len(target_csqs) < 2:
             return
 
+        def _parse_open_dt(open_str: str):
+            """'MM/DD HH:MM:SS' → datetime (연도는 올해로 가정). 실패하면 None."""
+            try:
+                dt = datetime.strptime(open_str, "%m/%d %H:%M:%S")
+                return dt.replace(year=datetime.now().year)
+            except Exception:
+                return None
+
+        now = datetime.now()
+
         def sort_key(idx_csq):
             idx, csq = idx_csq
             info = self._target_info.get(csq)
-            if info and info.get("open") and info.get("title"):
-                # 오픈시간+상품명 둘 다 확인됨 → 최우선, 시간순
-                # "MM/DD HH:MM:SS" 형식은 제로패딩되어 있어 문자열 비교로도 시간순 정렬됨
-                return (0, info["open"], idx)
             if info and info.get("open"):
-                # 오픈시간은 알지만 상품명 미확인 → 그 다음, 시간순
+                open_dt = _parse_open_dt(info["open"])
+                is_past = (open_dt is not None) and (open_dt < now)
+                if is_past:
+                    # 이미 지난 시간 → 맨 아래 쪽 (스캔 미발견보다는 위)
+                    return (2, info["open"], idx)
+                if info.get("title"):
+                    # 오픈시간+상품명 둘 다 확인 + 아직 안 지남 → 최우선, 시간순
+                    # "MM/DD HH:MM:SS" 형식은 제로패딩되어 있어 문자열 비교로도 시간순 정렬됨
+                    return (0, info["open"], idx)
+                # 오픈시간은 알지만 상품명 미확인 + 아직 안 지남 → 그 다음, 시간순
                 return (1, info["open"], idx)
             # 아직 스캔에서 아예 발견 안 됨 → 맨 아래, 기존 순서 유지
-            return (2, "", idx)
+            return (3, "", idx)
 
         sorted_csqs = [csq for _, csq in sorted(enumerate(target_csqs), key=sort_key)]
         if sorted_csqs == target_csqs:
