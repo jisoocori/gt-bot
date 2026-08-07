@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-LOGIC_LAST_MODIFIED = "2026-08-07 15:40"  # ⭐ 이 파일 수정할 때마다 갱신
+LOGIC_LAST_MODIFIED = "2026-08-07 16:05"  # ⭐ 이 파일 수정할 때마다 갱신
 
 import os
 import re
@@ -1248,6 +1248,13 @@ def estimate_server_offset(session: requests.Session, driver: webdriver.Chrome, 
 
 
 def wait_until_server_second(driver: webdriver.Chrome, session: requests.Session, url: str, target_open_dt_local: datetime) -> bool:
+    # ⭐ 이미 목표시각에 임박했거나(1.5초 이하) 지난 상태라면, 정밀 오프셋 측정(7회 샘플링, 1초+ 소요)에
+    #    시간을 쓰지 않고 바로 클릭 진행 — 이미 늦은 상황에서 정밀도보다 속도가 더 중요함
+    naive_remain = (target_open_dt_local - datetime.now()).total_seconds()
+    if naive_remain <= 1.5:
+        log(f"[대기] 목표시각 임박/경과({naive_remain:.2f}s 남음) → 오프셋 측정 생략, 즉시 진행")
+        return True
+
     # 1. 최초 1회 측정
     offset = estimate_server_offset(session, driver, url, samples=7)
     if offset is None:
