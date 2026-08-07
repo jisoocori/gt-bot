@@ -8,6 +8,8 @@ GT 자동 감시 GUI
     python gui.py
 """
 
+GUI_LAST_MODIFIED = "2026-08-07 15:40"  # ⭐ 이 파일 수정할 때마다 갱신
+
 import os
 import sys
 import re
@@ -173,7 +175,8 @@ class GTApp(tk.Tk):
     def __init__(self):
         super().__init__()
         folder_name = os.path.basename(os.getcwd())
-        self.title(f"GT 자동 감시 GUI - [{folder_name}]")
+        logic_build = getattr(logic, "LOGIC_LAST_MODIFIED", "?") if logic else "?"
+        self.title(f"GT 자동 감시 GUI - [{folder_name}]  (GUI {GUI_LAST_MODIFIED} / 로직 {logic_build})")
         self.resizable(True, True)
         self.minsize(900, 640)
 
