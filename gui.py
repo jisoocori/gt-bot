@@ -8,7 +8,7 @@ GT 자동 감시 GUI
     python gui.py
 """
 
-GUI_LAST_MODIFIED = "2026-08-07 15:40"  # ⭐ 이 파일 수정할 때마다 갱신
+GUI_LAST_MODIFIED = "2026-08-13 01:20"  # ⭐ 이 파일 수정할 때마다 갱신
 
 import os
 import sys
@@ -418,8 +418,12 @@ class GTApp(tk.Tk):
             if m:
                 csq, title, open_str = m.group(1), m.group(2) or "", m.group(3).strip()
                 prev = self._target_info.get(csq)
-                if prev != {"open": open_str, "title": title}:
-                    self._target_info[csq] = {"open": open_str, "title": title}
+                # ⭐ 상품명은 한 번 확보되면 계속 유지 — 이후 스캔에서 빈 값으로 들어와도 덮어쓰지 않음
+                if not title and prev and prev.get("title"):
+                    title = prev["title"]
+                new_info = {"open": open_str, "title": title}
+                if prev != new_info:
+                    self._target_info[csq] = new_info
                     self.after(0, self._refresh_target_info_panel)
                 return
 
