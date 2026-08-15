@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-LOGIC_LAST_MODIFIED = "2026-08-07 16:05"  # ⭐ 이 파일 수정할 때마다 갱신
+LOGIC_LAST_MODIFIED = "2026-08-13 02:10"  # ⭐ 이 파일 수정할 때마다 갱신
 
 import os
 import re
@@ -1726,13 +1726,25 @@ def scan_and_pick(driver: webdriver.Chrome, failed_once: set) -> Tuple[Optional[
                         continue
                     # jointime이 이미 지났거나 참여가능 텍스트가 있으면 즉시 참여
                     jointime_passed_target = jointime_dt is not None and jointime_dt <= now
-                    is_open_now = jointime_passed_target or ("참여가능" in text and ("진행중" in text or "대기중" in text))
+                    text_says_open_now = "참여가능" in text and ("진행중" in text or "대기중" in text)
+
+                    # ⭐ 카드 화면 텍스트에 더 미래의 새 시간 정보(open_dt)가 보이면 그걸 우선 신뢰.
+                    #    jointime 속성값이 (사이트가 아직 못 갱신해서) 과거로 멈춰있어도,
+                    #    화면에 다음 회차 시간이 표시돼 있으면 "즉시 참여 가능"으로 오판하지 않고
+                    #    그 새 시간을 타겟의 새 목표시각으로 갱신함.
+                    has_fresh_future_time = open_dt is not None and secs_to_open is not None and secs_to_open > 0
+
+                    if has_fresh_future_time:
+                        is_open_now = False
+                    else:
+                        is_open_now = jointime_passed_target or text_says_open_now
 
                     if is_open_now:
                         log(f"[타겟] [타겟 발견] {csq} 즉시 참여 가능 → 즉시 참여 시도!")
                         return {"csq": csq, "card_index": item_raw.get("idx"), "price": 0, "type": "TARGET", "title": item_raw.get("title") or ""}, None
                     else:
-                        target_open_dt = jointime_dt or open_dt
+                        # ⭐ jointime이 과거로 멈춰있어도 화면에 미래 시간(open_dt)이 있으면 그걸 우선 사용
+                        target_open_dt = open_dt if has_fresh_future_time else (jointime_dt or open_dt)
                         target_secs = (target_open_dt - now).total_seconds() if target_open_dt else None
 
                         # ⭐ 오픈 임박 기준(HOT_WINDOW_SEC) 이내일 때만 다른 후보보다 최우선으로 즉시 상세 진입.
