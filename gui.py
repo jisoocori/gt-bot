@@ -8,7 +8,7 @@ GT 자동 감시 GUI
     python gui.py
 """
 
-GUI_LAST_MODIFIED = "2026-08-13 01:35"  # ⭐ 이 파일 수정할 때마다 갱신
+GUI_LAST_MODIFIED = "2026-08-13 01:50"  # ⭐ 이 파일 수정할 때마다 갱신
 
 import os
 import sys
@@ -411,6 +411,8 @@ class GTApp(tk.Tk):
         # [타겟] 타겟 88898 [상품명] 아직 여유 있음 (...초 남음, 시작=07/16 15:35:00, ...)
         re.compile(r"\[타겟\] 타겟 (\d+)(?: \[(.*?)\])? 아직 여유 있음 \(.*?시작=([0-9/: ]+),"),
     ]
+    # jointime이 지나 "즉시 참여 가능"으로 넘어간 경우 (새 회차 시간이 아직 카드에 반영 안 됐을 수 있음)
+    _TARGET_INFO_OPEN_NOW_PATTERN = re.compile(r"\[타겟\] \[타겟 발견\] (\d+) 즉시 참여 가능")
 
     def _parse_target_info(self, msg: str):
         for pat in self._TARGET_INFO_PATTERNS:
@@ -426,6 +428,16 @@ class GTApp(tk.Tk):
                     self._target_info[csq] = new_info
                     self.after(0, self._refresh_target_info_panel)
                 return
+        m2 = self._TARGET_INFO_OPEN_NOW_PATTERN.search(msg)
+        if m2:
+            csq = m2.group(1)
+            prev = self._target_info.get(csq)
+            title = (prev or {}).get("title", "")
+            marker = "지금 즉시참여 시도 중 (다음 회차 시간 미확인)"
+            new_info = {"open": marker, "title": title}
+            if prev != new_info:
+                self._target_info[csq] = new_info
+                self.after(0, self._refresh_target_info_panel)
 
     def _refresh_target_info_panel(self):
         try:
