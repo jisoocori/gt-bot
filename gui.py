@@ -8,7 +8,7 @@ GT 자동 감시 GUI
     python gui.py
 """
 
-GUI_LAST_MODIFIED = "2026-08-13 01:20"  # ⭐ 이 파일 수정할 때마다 갱신
+GUI_LAST_MODIFIED = "2026-08-13 01:35"  # ⭐ 이 파일 수정할 때마다 갱신
 
 import os
 import sys
@@ -457,18 +457,33 @@ class GTApp(tk.Tk):
         if len(target_csqs) < 2:
             return
 
+        def _parse_open_dt(open_str: str):
+            """'MM/DD HH:MM:SS' → datetime (연도는 올해로 가정). 실패하면 None."""
+            try:
+                dt = datetime.strptime(open_str, "%m/%d %H:%M:%S")
+                return dt.replace(year=datetime.now().year)
+            except Exception:
+                return None
+
+        now = datetime.now()
+
         def sort_key(idx_csq):
             idx, csq = idx_csq
             info = self._target_info.get(csq)
-            if info and info.get("open") and info.get("title"):
-                # 오픈시간+상품명 둘 다 확인됨 → 최우선, 시간순
-                # "MM/DD HH:MM:SS" 형식은 제로패딩되어 있어 문자열 비교로도 시간순 정렬됨
-                return (0, info["open"], idx)
             if info and info.get("open"):
-                # 오픈시간은 알지만 상품명 미확인 → 그 다음, 시간순
+                open_dt = _parse_open_dt(info["open"])
+                is_past = (open_dt is not None) and (open_dt < now)
+                if is_past:
+                    # 이미 지난 시간 → 맨 아래 쪽 (스캔 미발견보다는 위)
+                    return (2, info["open"], idx)
+                if info.get("title"):
+                    # 오픈시간+상품명 둘 다 확인 + 아직 안 지남 → 최우선, 시간순
+                    # "MM/DD HH:MM:SS" 형식은 제로패딩되어 있어 문자열 비교로도 시간순 정렬됨
+                    return (0, info["open"], idx)
+                # 오픈시간은 알지만 상품명 미확인 + 아직 안 지남 → 그 다음, 시간순
                 return (1, info["open"], idx)
             # 아직 스캔에서 아예 발견 안 됨 → 맨 아래, 기존 순서 유지
-            return (2, "", idx)
+            return (3, "", idx)
 
         sorted_csqs = [csq for _, csq in sorted(enumerate(target_csqs), key=sort_key)]
         if sorted_csqs == target_csqs:
