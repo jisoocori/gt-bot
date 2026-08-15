@@ -8,7 +8,7 @@ GT 자동 감시 GUI
     python gui.py
 """
 
-GUI_LAST_MODIFIED = "2026-08-13 01:50"  # ⭐ 이 파일 수정할 때마다 갱신
+GUI_LAST_MODIFIED = "2026-08-13 02:20"  # ⭐ 이 파일 수정할 때마다 갱신
 
 import os
 import sys
@@ -30,54 +30,60 @@ _LOGIC_FILE = resource_path("sum_260609.py")
 
 
 # ── GitHub 자동 업데이트 ─────────────────────────────────────────────────
+# ⭐ 창이 뜨는 걸 절대 막지 않도록, 이 체크는 항상 백그라운드 스레드에서만 돈다.
+#    (강제 재시작 없음 — 새 버전 받으면 로그에 안내만 하고, 다음 실행부터 반영됨)
 GITHUB_OWNER  = "jisoocori"
 GITHUB_REPO   = "gt-bot"
 GITHUB_BRANCH = "main"
 AUTO_UPDATE_ENABLED = True   # 자동 업데이트를 끄고 싶으면 False로 바꾸세요
 
-def _check_and_apply_updates():
-    """실행 시작 시 GitHub에서 최신 gui.py / sum_260609.py를 받아와 로컬과 다르면 덮어씀.
-       gui.py 자신이 바뀌었으면 새 코드로 즉시 재시작."""
+def _check_updates_in_background(on_result=None):
+    """GitHub에서 최신 gui.py / sum_260609.py를 받아와 로컬과 다르면 덮어씀.
+       네트워크 문제가 있어도 앱 실행 자체는 절대 막지 않음(백그라운드 스레드 + 짧은 타임아웃).
+       gui.py 자신을 강제로 재시작하지 않음 — 다음 실행부터 반영."""
     if not AUTO_UPDATE_ENABLED:
         return
-    import urllib.request
 
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    filenames = ["gui.py", "sum_260609.py"]
-    self_updated = False
+    def _worker():
+        import urllib.request
 
-    for fname in filenames:
-        local_path = os.path.join(base_dir, fname)
-        url = f"https://raw.githubusercontent.com/{GITHUB_OWNER}/{GITHUB_REPO}/{GITHUB_BRANCH}/{fname}"
-        try:
-            with urllib.request.urlopen(url, timeout=5) as resp:
-                remote_bytes = resp.read()
-        except Exception as e:
-            print(f"[업데이트 확인 실패] {fname}: {e}")
-            continue
-        if not remote_bytes:
-            continue
-        try:
-            with open(local_path, "rb") as f:
-                local_bytes = f.read()
-        except FileNotFoundError:
-            local_bytes = b""
-        if remote_bytes != local_bytes:
+        def _norm(b: bytes) -> bytes:
+            # 줄바꿈 차이(\r\n vs \n)만으로는 "다르다"고 판단하지 않도록 정규화
+            return b.replace(b"\r\n", b"\n")
+
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        updated_files = []
+
+        for fname in ("gui.py", "sum_260609.py"):
+            local_path = os.path.join(base_dir, fname)
+            url = f"https://raw.githubusercontent.com/{GITHUB_OWNER}/{GITHUB_REPO}/{GITHUB_BRANCH}/{fname}"
             try:
-                with open(local_path, "wb") as f:
-                    f.write(remote_bytes)
-                print(f"[업데이트 적용됨] {fname}")
-                if fname == "gui.py":
-                    self_updated = True
+                with urllib.request.urlopen(url, timeout=4) as resp:
+                    remote_bytes = resp.read()
             except Exception as e:
-                print(f"[업데이트 저장 실패] {fname}: {e}")
+                print(f"[업데이트 확인 실패] {fname}: {e}")
+                continue
+            if not remote_bytes:
+                continue
+            try:
+                with open(local_path, "rb") as f:
+                    local_bytes = f.read()
+            except FileNotFoundError:
+                local_bytes = b""
+            if _norm(remote_bytes) != _norm(local_bytes):
+                try:
+                    with open(local_path, "wb") as f:
+                        f.write(remote_bytes)
+                    print(f"[업데이트 적용됨] {fname} (다음 실행부터 반영됩니다)")
+                    updated_files.append(fname)
+                except Exception as e:
+                    print(f"[업데이트 저장 실패] {fname}: {e}")
 
-    if self_updated:
-        print("gui.py가 갱신되어 재시작합니다...")
-        python = sys.executable
-        os.execv(python, [python] + sys.argv)
+        if on_result:
+            on_result(updated_files)
 
-_check_and_apply_updates()
+    th = threading.Thread(target=_worker, daemon=True)
+    th.start()
 
 
 # ── 로직 모듈 동적 import (같은 폴더 기준) ──────────────────────────────────
@@ -202,6 +208,16 @@ class GTApp(tk.Tk):
             logic.log = self._gui_log
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+        # ⭐ 창이 다 뜬 뒤에 백그라운드로 업데이트 확인 (네트워크 문제로 창 뜨는 게 막히지 않도록)
+        self.after(300, lambda: _check_updates_in_background(self._on_update_check_done))
+
+    def _on_update_check_done(self, updated_files):
+        if not updated_files:
+            return
+        names = ", ".join(updated_files)
+        self.after(0, self._append_log,
+                    f"[안내] 새 버전 받음: {names} — 다음 실행부터 반영됩니다 (지금 재시작해도 됨)\n")
 
     # ── UI 구성 ───────────────────────────────────────────────────────────────
 
