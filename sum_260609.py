@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-LOGIC_LAST_MODIFIED = "2026-08-13 02:10"  # ⭐ 이 파일 수정할 때마다 갱신
+LOGIC_LAST_MODIFIED = "2026-08-19"  # ⭐ 이 파일 수정할 때마다 갱신
 
 import os
 import re
@@ -1720,10 +1720,9 @@ def scan_and_pick(driver: webdriver.Chrome, failed_once: set) -> Tuple[Optional[
                     if csq in success_csq:
                         log(f"[스킵] csq={csq} rsn=영구저장 완료")
                         continue
-                    # 이번실행 실패 목록에 있으면 스킵
-                    if csq in failed_once:
-                        log(f"[스킵] csq={csq} rsn=이번실행 실패")
-                        continue
+                    # ⭐ 타겟은 이번실행 실패 목록에 있어도 완전히 포기하지 않고,
+                    #    매 스캔마다 최신 오픈시간을 다시 확인해서 재도전함
+                    #    (일반 후보와 달리 사용자가 직접 지정한 타겟이라 계속 챙김)
                     # jointime이 이미 지났거나 참여가능 텍스트가 있으면 즉시 참여
                     jointime_passed_target = jointime_dt is not None and jointime_dt <= now
                     text_says_open_now = "참여가능" in text and ("진행중" in text or "대기중" in text)
