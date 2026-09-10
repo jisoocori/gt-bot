@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-LOGIC_LAST_MODIFIED = "2026-08-19"  # ⭐ 이 파일 수정할 때마다 갱신
+LOGIC_LAST_MODIFIED = "2026-08-22"  # ⭐ 이 파일 수정할 때마다 갱신
 
 import os
 import re
@@ -1683,6 +1683,13 @@ def scan_and_pick(driver: webdriver.Chrome, failed_once: set) -> Tuple[Optional[
         local_best_now = picked_now
         local_best_soon = picked_soon
 
+        global TARGET_CSQ
+        # 콤마(,)로 구분된 문자열을 분리하여 타겟 리스트 생성 (공백 자동 제거) — 적힌 순서 = 우선순위
+        target_list = [t.strip() for t in TARGET_CSQ.split(",") if t.strip()]
+        # ⭐ 이 스테이지에서 조건을 만족한 타겟들을 일단 모아두고, 루프가 끝난 뒤 우선순위로 하나만 선택
+        target_open_now_matches: List[Dict] = []
+        target_hot_matches: List[Dict] = []
+
         for item_raw in cards:
             try:
                 csq = (item_raw.get("csq") or "").strip()
@@ -1711,10 +1718,6 @@ def scan_and_pick(driver: webdriver.Chrome, failed_once: set) -> Tuple[Optional[
                 # ============================================================
                 # ⭐ 스나이핑 모드 (여러 타겟 CSQ 일치 시 다중 처리)
                 # ============================================================
-                global TARGET_CSQ
-                # 콤마(,)로 구분된 문자열을 분리하여 타겟 리스트 생성 (공백 자동 제거)
-                target_list = [t.strip() for t in TARGET_CSQ.split(",") if t.strip()]
-                
                 if target_list and csq in target_list:
                     # 영구저장에 있으면 타겟이라도 완전 스킵
                     if csq in success_csq:
@@ -1739,33 +1742,37 @@ def scan_and_pick(driver: webdriver.Chrome, failed_once: set) -> Tuple[Optional[
                         is_open_now = jointime_passed_target or text_says_open_now
 
                     if is_open_now:
-                        log(f"[타겟] [타겟 발견] {csq} 즉시 참여 가능 → 즉시 참여 시도!")
-                        return {"csq": csq, "card_index": item_raw.get("idx"), "price": 0, "type": "TARGET", "title": item_raw.get("title") or ""}, None
+                        # ⭐ 즉시 리턴하지 않고 일단 후보로만 모아둠 (같은 스테이지에 동시에 여러 타겟이 열렸을 수 있음)
+                        target_open_now_matches.append({
+                            "csq": csq,
+                            "card_index": item_raw.get("idx"),
+                            "title": item_raw.get("title") or "",
+                        })
                     else:
                         # ⭐ jointime이 과거로 멈춰있어도 화면에 미래 시간(open_dt)이 있으면 그걸 우선 사용
                         target_open_dt = open_dt if has_fresh_future_time else (jointime_dt or open_dt)
                         target_secs = (target_open_dt - now).total_seconds() if target_open_dt else None
+                        open_time_str = target_open_dt.strftime("%m/%d %H:%M:%S") if target_open_dt else "?"
 
                         # ⭐ 오픈 임박 기준(HOT_WINDOW_SEC) 이내일 때만 다른 후보보다 최우선으로 즉시 상세 진입.
                         #    아직 많이 남았으면 여기서 붙잡지 않고 이번 스캔에서 다른 일반 캠페인도 계속 탐색/참여.
                         #    (target_secs를 아직 모르는 경우는 정확한 오픈시각 확인을 위해 예외적으로 즉시 진입)
-                        open_time_str = target_open_dt.strftime("%m/%d %H:%M:%S") if target_open_dt else "?"
                         if target_secs is None or target_secs <= HOT_WINDOW_SEC:
                             wait_msg = f"{int(target_secs)}초 남음" if target_secs and target_secs > 0 else "상세 페이지에서 오픈시간 확인 예정"
-                            log(f"[타겟] [타겟 발견] {csq} ({wait_msg}, 시작={open_time_str}) → 오픈 임박, 다른 후보보다 최우선으로 즉시 상세 진입 후 대기!")
-                            return None, {
+                            # ⭐ 이것도 즉시 리턴하지 않고 후보로만 모아둠
+                            target_hot_matches.append({
                                 "csq": csq,
                                 "card_index": item_raw.get("idx"),
-                                "price": 0,
-                                "type": "TARGET",
                                 "title": item_raw.get("title") or "",
                                 "open_dt": target_open_dt,
-                                "secs_to_open": target_secs
-                            }
+                                "secs_to_open": target_secs,
+                                "wait_msg": wait_msg,
+                                "open_time_str": open_time_str,
+                            })
                         else:
                             title_tag = f" [{item_raw.get('title') or ''}]" if item_raw.get("title") else ""
                             log(f"[타겟] 타겟 {csq}{title_tag} 아직 여유 있음 ({int(target_secs)}초 남음, 시작={open_time_str}, 임박기준 {HOT_WINDOW_SEC}초) → 지금은 다른 캠페인 탐색/참여 계속")
-                            continue
+                    continue
                 # ============================================================
 
                 ctype = detect_type(text, html)
@@ -1856,6 +1863,36 @@ def scan_and_pick(driver: webdriver.Chrome, failed_once: set) -> Tuple[Optional[
 
             except Exception as e:
                 log(f"[경고] 카드 검사 오류 stage={stage_label}: {e}")
+
+        # ⭐ 이 스테이지에서 동시에 조건을 만족한 타겟이 여러 개면, 타겟 CSQ 칸에 적힌 순서(우선순위)로 하나만 선택.
+        #    타겟은 항상 일반 후보(local_best_now/soon)보다 우선하므로 여기서 결정되면 그대로 반환.
+        if target_open_now_matches:
+            if len(target_open_now_matches) > 1:
+                order_str = ", ".join(m["csq"] for m in sorted(target_open_now_matches, key=lambda m: target_list.index(m["csq"])))
+                log(f"[타겟] 동시에 {len(target_open_now_matches)}개 타겟 즉시참여 가능 감지 ({order_str}) → 적힌 순서상 우선순위 1순위 선택")
+            best = min(target_open_now_matches, key=lambda m: target_list.index(m["csq"]))
+            log(f"[타겟] [타겟 발견] {best['csq']} 즉시 참여 가능 → 즉시 참여 시도!")
+            picked_now = {"csq": best["csq"], "card_index": best["card_index"], "price": 0, "type": "TARGET", "title": best["title"]}
+            picked_soon = local_best_soon
+            return picked_now, picked_soon
+
+        if target_hot_matches:
+            if len(target_hot_matches) > 1:
+                order_str = ", ".join(m["csq"] for m in sorted(target_hot_matches, key=lambda m: target_list.index(m["csq"])))
+                log(f"[타겟] 동시에 {len(target_hot_matches)}개 타겟 오픈 임박 감지 ({order_str}) → 적힌 순서상 우선순위 1순위 선택")
+            best = min(target_hot_matches, key=lambda m: target_list.index(m["csq"]))
+            log(f"[타겟] [타겟 발견] {best['csq']} ({best['wait_msg']}, 시작={best['open_time_str']}) → 오픈 임박, 다른 후보보다 최우선으로 즉시 상세 진입 후 대기!")
+            picked_now = local_best_now
+            picked_soon = {
+                "csq": best["csq"],
+                "card_index": best["card_index"],
+                "price": 0,
+                "type": "TARGET",
+                "title": best["title"],
+                "open_dt": best["open_dt"],
+                "secs_to_open": best["secs_to_open"],
+            }
+            return picked_now, picked_soon
 
         picked_now = local_best_now
         picked_soon = local_best_soon
