@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-LOGIC_LAST_MODIFIED = "2026-08-22"  # ⭐ 이 파일 수정할 때마다 갱신
+LOGIC_LAST_MODIFIED = "2026-10-11"  # ⭐ 이 파일 수정할 때마다 갱신
 
 import os
 import re
@@ -1225,6 +1225,11 @@ def fast_fetch_detail_html(driver: webdriver.Chrome, session: requests.Session, 
     return r.text, server_dt, t0, t1
 
 
+# ── 참여확인 클릭 시각 로그용 ─────────────────────────────────────────────
+_LAST_KNOWN_OFFSET: Optional[float] = None   # 가장 최근에 측정된 서버-로컬 오프셋(초)
+_CLICK_TIMING_CTX: Optional[Dict] = None     # 정각 대기가 끝난 직후 첫 클릭 로그에 쓸 정보(1회용)
+
+
 def estimate_server_offset(session: requests.Session, driver: webdriver.Chrome, url: str, samples: int = 7) -> Optional[float]:
     offsets = []
     for _ in range(samples):
@@ -1250,9 +1255,12 @@ def estimate_server_offset(session: requests.Session, driver: webdriver.Chrome, 
 def wait_until_server_second(driver: webdriver.Chrome, session: requests.Session, url: str, target_open_dt_local: datetime) -> bool:
     # ⭐ 이미 목표시각에 임박했거나(1.5초 이하) 지난 상태라면, 정밀 오프셋 측정(7회 샘플링, 1초+ 소요)에
     #    시간을 쓰지 않고 바로 클릭 진행 — 이미 늦은 상황에서 정밀도보다 속도가 더 중요함
+    global _LAST_KNOWN_OFFSET, _CLICK_TIMING_CTX
     naive_remain = (target_open_dt_local - datetime.now()).total_seconds()
     if naive_remain <= 1.5:
         log(f"[대기] 목표시각 임박/경과({naive_remain:.2f}s 남음) → 오프셋 측정 생략, 즉시 진행")
+        # 이번엔 새로 측정하지 않았으므로, 직전에 측정해둔 값(없으면 None)으로 클릭 시각을 추정
+        _CLICK_TIMING_CTX = {"offset": _LAST_KNOWN_OFFSET, "target": target_open_dt_local, "measured": False}
         return True
 
     # 1. 최초 1회 측정
@@ -1262,6 +1270,7 @@ def wait_until_server_second(driver: webdriver.Chrome, session: requests.Session
         log("[경고] 최초 서버 오프셋 추정 실패 → 로컬 정각 기준으로 진행")
     else:
         log(f"[대기] 최초 서버 오프셋 추정: {offset:+.3f}s (서버-로컬)")
+        _LAST_KNOWN_OFFSET = offset
 
     last_recalc_time = time.time()
 
@@ -1286,6 +1295,7 @@ def wait_until_server_second(driver: webdriver.Chrome, session: requests.Session
                 new_offset = estimate_server_offset(session, driver, url, samples=5)
                 if new_offset is not None:
                     offset = new_offset
+                    _LAST_KNOWN_OFFSET = offset
                     log(f"[대기] 갱신된 서버 오프셋: {offset:+.3f}s (서버-로컬)")
                 last_recalc_time = time.time()
                 # 오프셋이 변경되었을 수 있으므로 remain 재계산을 위해 다시 루프 처음으로
@@ -1317,6 +1327,7 @@ def wait_until_server_second(driver: webdriver.Chrome, session: requests.Session
         time.sleep(0.0005)
 
     log(f"[대기] 로컬 목표시각 도달: now={datetime.now().strftime('%H:%M:%S.%f')[:-3]}")
+    _CLICK_TIMING_CTX = {"offset": offset, "target": target_open_dt_local, "measured": True}
     return True
 
 
@@ -1338,6 +1349,12 @@ def click_confirm_modal(driver: webdriver.Chrome) -> bool:
         return True
     _last_confirm_at = now
 
+    global _CLICK_TIMING_CTX
+    # ⭐ 클릭 직전 시각을 먼저 캡처 (로그 출력으로 클릭이 늦어지지 않도록 로그는 클릭 뒤에 찍음)
+    click_local_dt = datetime.now()
+    timing_ctx = _CLICK_TIMING_CTX
+    _CLICK_TIMING_CTX = None   # 1회용 — 다음 클릭에 예전 정보가 섞이지 않도록 비움
+
     t_click0 = time.time()
     called = driver.execute_script("""
         try {
@@ -1351,6 +1368,20 @@ def click_confirm_modal(driver: webdriver.Chrome) -> bool:
             return false;
         } catch(e) { return false; }
     """)
+
+    # 클릭 시각 로그: 로컬 시각 / 서버 추정 시각 / 목표(오픈) 시각 대비 차이
+    local_str = click_local_dt.strftime('%H:%M:%S.%f')[:-3]
+    if timing_ctx and timing_ctx.get("offset") is not None:
+        server_dt = click_local_dt + timedelta(seconds=timing_ctx["offset"])
+        diff = (server_dt - timing_ctx["target"]).total_seconds()
+        note = "" if timing_ctx.get("measured") else " (오프셋: 직전 측정값 사용)"
+        log(f"[클릭] 참여확인 클릭 시각: 로컬 {local_str} | 서버추정 {server_dt.strftime('%H:%M:%S.%f')[:-3]} "
+            f"| 오픈 {timing_ctx['target'].strftime('%H:%M:%S')} 대비 {diff:+.3f}s{note}")
+    elif timing_ctx:
+        log(f"[클릭] 참여확인 클릭 시각: 로컬 {local_str} | 서버시각 추정 불가(오프셋 미측정) "
+            f"| 오픈 {timing_ctx['target'].strftime('%H:%M:%S')}")
+    else:
+        log(f"[클릭] 참여확인 클릭 시각: 로컬 {local_str} (정각 대기 없이 즉시 클릭)")
 
     if called:
         log(f"[완료] 참여확인 처리 호출 완료 (+{int((time.time()-t_click0)*1000)}ms)")
