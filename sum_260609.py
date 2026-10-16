@@ -1283,6 +1283,7 @@ _CLICK_TIMING_CTX: Optional[Dict] = None
 
 def wait_until_server_second(driver: webdriver.Chrome, session: requests.Session, url: str, target_open_dt_local: datetime) -> bool:
     global _CLICK_TIMING_CTX
+    global _naver_clock  # <--- 이 부분이 맨 위로 올라와야 합니다.
     
     log("[대기] C# 방식 NaverClock 밀리초 동기화 시작...")
     try:
@@ -1293,7 +1294,6 @@ def wait_until_server_second(driver: webdriver.Chrome, session: requests.Session
         log(f"[경고] 서버 시계 동기화 실패 ({e}) -> 로컬 시스템 시간으로 대체합니다.")
         class FallbackClock:
             def Now(self): return datetime.now()
-        global _naver_clock
         _naver_clock = FallbackClock()
 
     while True:
