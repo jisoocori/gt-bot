@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-LOGIC_LAST_MODIFIED = "2026-10-17"  # ⭐ 이 파일 수정할 때마다 갱신
+LOGIC_LAST_MODIFIED = "2026-10-18"  # ⭐ 이 파일 수정할 때마다 갱신
 
 import os
 import re
@@ -13,8 +13,8 @@ import platform
 import requests
 import sys
 import atexit
-import urllib.parse
 import uuid
+import urllib.parse
 
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -79,9 +79,11 @@ def get_adaptive_poll_sec(sec_to_open: Optional[float]) -> float:
     if sec_to_open > DETAIL_POLL_NEAR_THRESHOLD_SEC:
         return DETAIL_POLL_SEC_MID
     return DETAIL_POLL_SEC_NEAR
-
 REQUEST_TIMEOUT_SEC    = 2.5
-CONFIRM_CLICK_LEAD_SEC = 0.05      # confirm를 서버 정각보다 약간 먼저 클릭
+CONFIRM_CLICK_LEAD_SEC = 0.0       # 참여확인 클릭을 정각(네이버 시각 기준)보다 몇 초 먼저 보낼지.
+                                   # 0.0 = 정각에 딱 맞춤(친구 프로그램과 동일). 로그의 [클릭] 줄(오픈 대비 +x.xxxs)과
+                                   # 결과 메시지를 보면서 조정 — "참여 가능한 시간이 아닙니다"가 나오면 값을 줄이고,
+                                   # 계속 "마감"이면 0.01~0.03 정도씩 늘려보세요.
 CONGESTION_RETRY_MAX       = 5     # "참여 요청이 많아 다시 참여" 메시지일 때 최대 재시도 횟수
 CONGESTION_RETRY_DELAY_SEC = 0.3   # 혼잡 재시도 간 대기 간격
 
@@ -146,121 +148,6 @@ def choose_site() -> str:
     if picked not in SITE_CONFIGS:
         raise ValueError(f"지원하지 않는 사이트입니다: {picked}")
     return picked
-
-
-# =========================
-# C# 방식 초정밀 NaverClock 클래스 이식
-# =========================
-class NaverClock:
-    def __init__(self):
-        self.Ready = False
-        self.RoundTripMs = 0.0
-        self.key = None
-        self.anchor = None
-        self.anchorTicks = 0.0
-
-    @property
-    def Age(self) -> float:
-        if not self.Ready:
-            return float('inf')
-        return (time.perf_counter() - self.anchorTicks)
-
-    @property
-    def Fresh(self) -> bool:
-        return self.Ready and self.Age < 120.0
-
-    @property
-    def Now(self) -> datetime:
-        if not self.Ready:
-            raise RuntimeError("네이버 시각 미동기화")
-        current = time.perf_counter()
-        return self.anchor + timedelta(seconds=(current - self.anchorTicks))
-
-    def Apply(self, sample: dict):
-        self.anchor = sample['Server'] + timedelta(milliseconds=sample['RoundTripMs'] / 2.0)
-        self.anchorTicks = sample['Received']
-        self.RoundTripMs = sample['RoundTripMs']
-        self.Ready = True
-
-    def Invalidate(self):
-        self.Ready = False
-
-    @staticmethod
-    def Get(url: str) -> str:
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/130.0.0.0 Safari/537.36",
-            "Referer": "https://search.naver.com/search.naver?query=%EB%84%A4%EC%9D%B4%EB%B2%84%EC%8B%9C%EA%B3%84"
-        }
-        resp = requests.get(url, timeout=4, headers=headers)
-        resp.raise_for_status()
-        return resp.text
-
-    @staticmethod
-    def ParseKey(html: str) -> str:
-        match = re.search(r'"sApiNowTime"\s*:\s*"https://m\.search\.naver\.com/p/csearch/dcontent/util/time\.naver"[\s\S]{0,500}?"passportKey"\s*:\s*"([A-Za-z0-9_-]+)"', html)
-        if not match:
-            raise ValueError("네이버 시계 연결 방식이 변경됐습니다.")
-        return match.group(1)
-
-    @staticmethod
-    def ParseTime(text: str) -> datetime:
-        match = re.search(r'oneClickClock\(\s*"(\d{4}/\d{2}/\d{2}/\d{2}/\d{2}/\d{2}/\d{3})"\s*\)\s*;?$', text.strip())
-        if not match:
-            raise ValueError("네이버 시각 응답을 읽지 못했습니다.")
-        parts = match.group(1).split('/')
-        try:
-            value = datetime(
-                int(parts[0]), int(parts[1]), int(parts[2]),
-                int(parts[3]), int(parts[4]), int(parts[5]),
-                int(parts[6]) * 1000
-            )
-        except Exception:
-            raise ValueError("네이버 시각이 올바르지 않습니다.")
-        return value
-
-    def RequestSample(self) -> dict:
-        url = "https://m.search.naver.com/p/csearch/dcontent/util/time.naver?passportKey=" + urllib.parse.quote(self.key) + "&_format=yyyy%2FMM%2Fdd%2FHH%2Fmm%2Fss%2FSSS&site=&_callback=oneClickClock&_=" + uuid.uuid4().hex
-        t0 = time.perf_counter()
-        text = NaverClock.Get(url)
-        t1 = time.perf_counter()
-        num = (t1 - t0) * 1000.0
-        if num > 2000.0:
-            raise ValueError("통신 지연이 커서 시각을 맞추지 못했습니다.")
-        return {
-            'Server': NaverClock.ParseTime(text),
-            'Received': t1,
-            'RoundTripMs': num
-        }
-
-    def Fetch(self) -> dict:
-        flag = self.key is not None
-        if self.key is None:
-            self.key = NaverClock.ParseKey(NaverClock.Get("https://search.naver.com/search.naver?query=%EB%84%A4%EC%9D%B4%EB%B2%84%EC%8B%9C%EA%B3%84"))
-        
-        clockSample = None
-        innerException = None
-        for i in range(3):
-            try:
-                clockSample2 = self.RequestSample()
-                if clockSample is None or clockSample2['RoundTripMs'] < clockSample['RoundTripMs']:
-                    clockSample = clockSample2
-            except Exception as ex:
-                innerException = ex
-                if i == 0 and flag:
-                    try:
-                        self.key = NaverClock.ParseKey(NaverClock.Get("https://search.naver.com/search.naver?query=%EB%84%A4%EC%9D%B4%EB%B2%84%EC%8B%9C%EA%B3%84"))
-                        flag = False
-                    except Exception:
-                        pass
-            if i < 2:
-                time.sleep(0.1)
-        if clockSample is None:
-            raise RuntimeError("네이버 시각을 가져오지 못했습니다.", innerException)
-        return clockSample
-
-
-# 전역 네이버 시계 인스턴스
-_naver_clock = NaverClock()
 
 
 # =========================
@@ -358,6 +245,9 @@ def save_html(label: str, html: str) -> Optional[str]:
 
 
 def save_current_page_html(driver: webdriver.Chrome, label: str) -> Optional[str]:
+    # ⭐ 저장 설정이 꺼져 있으면 page_source(페이지 전체 가져오기, 30~170ms)를 아예 읽지 않음
+    if not LOG_SAVE:
+        return None
     try:
         return save_html(label, driver.page_source or "")
     except Exception as e:
@@ -492,6 +382,8 @@ def detect_type(text: str, html: str = "") -> str:
 
 
 def detect_shop(text: str, html: str = "") -> str:
+    # 카드 HTML에서 쇼핑몰 이미지 패턴으로 판별
+    # ex) <img src="/resource/img/shop/naver.png" alt="Naver">
     blob = ((text or "") + " " + (html or "")).strip()
     if "img/shop/naver.png" in blob:
         return "NAVER"
@@ -622,6 +514,8 @@ def collect_visible_cards(driver: webdriver.Chrome) -> List[Dict]:
         return driver.execute_script("""
             return Array.from(document.querySelectorAll('.review_item')).map((card, idx) => {
                 const rect = card.getBoundingClientRect();
+                // ⭐ 이 사이트는 상품명이 .ctooltip-text(툴팁, 안 잘린 전체 텍스트) 안에 들어있음
+                //    (.ctooltip 자체는 화면표시용으로 일부 잘려있을 수 있음)
                 const tipEl = card.querySelector('.card-body p .ctooltip-text');
                 let title = '';
                 if (tipEl) {
@@ -629,6 +523,7 @@ def collect_visible_cards(driver: webdriver.Chrome) -> List[Dict]:
                 } else {
                     const ctEl = card.querySelector('.card-body p .ctooltip');
                     if (ctEl) {
+                        // 하위 .ctooltip-text를 제외한 상위 노드의 첫 텍스트만 사용
                         const clone = ctEl.cloneNode(true);
                         const inner = clone.querySelector('.ctooltip-text');
                         if (inner) inner.remove();
@@ -662,7 +557,6 @@ def get_card_element_by_index(driver: webdriver.Chrome, card_index: int):
     except Exception:
         pass
     return None
-
 
 # =========================
 # 크롬 드라이버
@@ -902,10 +796,13 @@ def handle_result_alert(driver: webdriver.Chrome, current_csq: Optional[str], fa
         log(f"[완료] 참여 성공 → 영구 저장 완료: {current_csq}")
         result = "success"
     elif current_csq and ("이미 참여한 캠페인입니다" in msg or "이미 참여한 계정입니다" in msg):
+        # 이 두 메시지는 "내가(내 계정이) 이 캠페인에 실제로 성공했다"는 의미라 영구저장 대상
         save_success_csq(current_csq)
         log(f"[완료] 이미 참여(최종 처리) → 영구 저장 완료: {current_csq}")
         result = "success"
     elif current_csq and "참여 할 수 있는 횟수를 초과하여" in msg:
+        # ⭐ 이 메시지는 "이 캠페인을 성공적으로 땄다"는 뜻이 아니라 계정 차원의 참여 횟수 제한일 수 있어서
+        #    영구저장(success_csq)하면 안 됨 — 잘못 저장하면 실제로 못 딴 캠페인을 영원히 스킵하게 됨.
         if current_account_index == 0 and available_account_count >= 2:
             log("[재시도] 첫번째 계정은 횟수초과 → 두번째 계정 1회 재시도")
             result = "retry_second"
@@ -917,6 +814,7 @@ def handle_result_alert(driver: webdriver.Chrome, current_csq: Optional[str], fa
         log(f"[대기] 아직 오픈 시간이 아님(서버 알림) → 블랙리스트 제외 후 계속 감시: {current_csq}")
         result = "fail"
     elif current_csq and ("참여 요청이 많아" in msg or "다시 참여" in msg):
+        # ⭐ 서버가 명시적으로 재시도를 권하는 혼잡 메시지 → 실패 처리 대신 즉시 재시도하도록 신호
         log(f"[재시도] 서버 혼잡 메시지 감지 → 즉시 재시도: {current_csq}{name_tag}")
         result = "retry_congestion"
     else:
@@ -1277,35 +1175,237 @@ def process_immediate_join_flow(driver: webdriver.Chrome, csq: str, failed_once:
 
 
 # =========================
-# C# 방식의 정각 대기 함수 교체 (NaverClock 연동)
+# 상세 선점 대기 및 서버 시간 맞춤
 # =========================
-_CLICK_TIMING_CTX: Optional[Dict] = None
+def build_requests_session_from_driver(driver: webdriver.Chrome) -> requests.Session:
+    s = requests.Session()
+    try:
+        ua = driver.execute_script("return navigator.userAgent")
+    except Exception:
+        ua = "Mozilla/5.0"
+
+    s.headers.update({
+        "User-Agent": ua,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
+        "Referer": driver.current_url or LIST_URL,
+    })
+
+    try:
+        for c in driver.get_cookies():
+            s.cookies.set(c.get("name"), c.get("value"), domain=c.get("domain"), path=c.get("path", "/"))
+    except Exception:
+        pass
+    return s
+
+
+def parse_http_date(value: Optional[str]) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        from email.utils import parsedate_to_datetime
+        dt = parsedate_to_datetime(value)
+        if dt.tzinfo is not None:
+            dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+        return dt
+    except Exception:
+        return None
+
+
+def fast_fetch_detail_html(driver: webdriver.Chrome, session: requests.Session, url: str) -> Tuple[str, Optional[datetime], float, float]:
+    try:
+        for c in driver.get_cookies():
+            session.cookies.set(c.get("name"), c.get("value"), domain=c.get("domain"), path=c.get("path", "/"))
+    except Exception:
+        pass
+
+    t0 = time.time()
+    r = session.get(url, timeout=REQUEST_TIMEOUT_SEC)
+    t1 = time.time()
+    r.raise_for_status()
+    r.encoding = r.encoding or "utf-8"
+    try:
+        save_html(f"detail_requests_{os.path.basename(url).split('?')[0] or 'raw'}", r.text or "")
+    except Exception:
+        pass
+    server_dt = parse_http_date(r.headers.get("Date"))
+    return r.text, server_dt, t0, t1
+
+
+# ── 정밀 시계 (네이버 서버 시각, 밀리초 단위) ────────────────────────────────
+# 예전에는 서버 Date 헤더(초 단위로 잘려서 옴)로 오프셋을 재서 최대 ~1초 오차가 생겼음.
+# → 밀리초까지 주는 네이버 시각을 여러 번 재서 왕복이 가장 짧은 값을 쓰고,
+#   이후에는 PC 시계 대신 단조 증가 타이머(perf_counter)로 시간을 센다.
+_CLICK_TIMING_CTX: Optional[Dict] = None   # 정각 대기가 끝난 직후 첫 클릭에 넘겨주는 정보(1회용)
+
+_NAVER_SEARCH_URL = "https://search.naver.com/search.naver?query=%EB%84%A4%EC%9D%B4%EB%B2%84%EC%8B%9C%EA%B3%84"
+_NAVER_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/130.0.0.0 Safari/537.36"
+
+
+class NaverClock:
+    def __init__(self):
+        self.Ready = False
+        self.RoundTripMs = 0.0
+        self.key = None
+        self.anchor = None
+        self.anchorTicks = 0.0
+        # 연결 재사용(keep-alive): 샘플마다 새로 연결하면 왕복에 연결 맺는 시간이 섞여 시계가 앞서가 버림
+        self.http = requests.Session()
+        self.http.headers.update({"User-Agent": _NAVER_UA, "Referer": _NAVER_SEARCH_URL})
+
+    @property
+    def Age(self) -> float:
+        if not self.Ready:
+            return float("inf")
+        return time.perf_counter() - self.anchorTicks
+
+    @property
+    def Fresh(self) -> bool:
+        return self.Ready and self.Age < 120.0
+
+    @property
+    def Now(self) -> datetime:
+        if not self.Ready:
+            raise RuntimeError("네이버 시각 미동기화")
+        return self.anchor + timedelta(seconds=(time.perf_counter() - self.anchorTicks))
+
+    def Apply(self, sample: dict):
+        # 서버가 시각을 찍은 뒤 응답이 도착하기까지 걸린 시간 ≈ 왕복의 절반
+        self.anchor = sample["Server"] + timedelta(milliseconds=sample["RoundTripMs"] / 2.0)
+        self.anchorTicks = sample["Received"]
+        self.RoundTripMs = sample["RoundTripMs"]
+        self.Ready = True
+
+    def _get(self, url: str) -> str:
+        resp = self.http.get(url, timeout=4)
+        resp.raise_for_status()
+        return resp.text
+
+    @staticmethod
+    def ParseKey(html: str) -> str:
+        m = re.search(
+            r'"sApiNowTime"\s*:\s*"https://m\.search\.naver\.com/p/csearch/dcontent/util/time\.naver"'
+            r'[\s\S]{0,500}?"passportKey"\s*:\s*"([A-Za-z0-9_-]+)"', html)
+        if not m:
+            raise ValueError("네이버 시계 연결 방식이 변경됐습니다.")
+        return m.group(1)
+
+    @staticmethod
+    def ParseTime(text: str) -> datetime:
+        m = re.search(r'oneClickClock\(\s*"(\d{4}/\d{2}/\d{2}/\d{2}/\d{2}/\d{2}/\d{3})"\s*\)\s*;?$', text.strip())
+        if not m:
+            raise ValueError("네이버 시각 응답을 읽지 못했습니다.")
+        p = m.group(1).split("/")
+        return datetime(int(p[0]), int(p[1]), int(p[2]), int(p[3]), int(p[4]), int(p[5]), int(p[6]) * 1000)
+
+    def _request_sample(self) -> dict:
+        url = ("https://m.search.naver.com/p/csearch/dcontent/util/time.naver?passportKey="
+               + urllib.parse.quote(self.key)
+               + "&_format=yyyy%2FMM%2Fdd%2FHH%2Fmm%2Fss%2FSSS&site=&_callback=oneClickClock&_=" + uuid.uuid4().hex)
+        t0 = time.perf_counter()
+        text = self._get(url)
+        t1 = time.perf_counter()
+        rtt = (t1 - t0) * 1000.0
+        if rtt > 2000.0:
+            raise ValueError("통신 지연이 커서 시각을 맞추지 못했습니다.")
+        return {"Server": self.ParseTime(text), "Received": t1, "RoundTripMs": rtt}
+
+    def Fetch(self) -> dict:
+        had_key = self.key is not None
+        if self.key is None:
+            self.key = self.ParseKey(self._get(_NAVER_SEARCH_URL))
+
+        last_err = None
+        # 첫 요청은 연결(TCP/TLS)을 맺느라 왕복이 부풀기 때문에 버리고, 그다음 3번을 잰다.
+        try:
+            self._request_sample()
+        except Exception as e:
+            last_err = e
+            if had_key:   # 키가 만료됐을 수 있어 한 번 갱신
+                try:
+                    self.key = self.ParseKey(self._get(_NAVER_SEARCH_URL))
+                except Exception:
+                    pass
+
+        best = None
+        for i in range(3):
+            try:
+                smp = self._request_sample()
+                if best is None or smp["RoundTripMs"] < best["RoundTripMs"]:
+                    best = smp
+            except Exception as e:
+                last_err = e
+            if i < 2:
+                time.sleep(0.05)
+        if best is None:
+            raise RuntimeError(f"네이버 시각을 가져오지 못했습니다: {last_err}")
+        return best
+
+
+_naver_clock = NaverClock()
+
+
+def _sync_naver_clock(reason: str) -> bool:
+    """네이버 시각으로 정밀 시계를 맞춘다. 실패해도 예외를 밖으로 던지지 않음(→ PC 시계로 계속 진행)."""
+    t_start = time.perf_counter()
+    try:
+        _naver_clock.Apply(_naver_clock.Fetch())
+    except Exception as e:
+        log(f"[경고] 네이버 시각 동기화 실패({reason}) → 이번엔 PC 시계로 진행: {e}")
+        return False
+    spent = int((time.perf_counter() - t_start) * 1000)
+    pc_minus_naver = (datetime.now() - _naver_clock.Now).total_seconds()
+    log(f"[대기] 네이버 시각 동기화({reason}): 왕복 {_naver_clock.RoundTripMs:.0f}ms, "
+        f"PC시계-네이버 {pc_minus_naver:+.3f}s, 소요 {spent}ms")
+    return True
+
+
+def _precise_now() -> datetime:
+    """정밀 시계(네이버)가 준비돼 있으면 그 시각, 아니면 PC 시계."""
+    if _naver_clock.Ready:
+        return _naver_clock.Now
+    return datetime.now()
+
 
 def wait_until_server_second(driver: webdriver.Chrome, session: requests.Session, url: str, target_open_dt_local: datetime) -> bool:
+    """참여확인 클릭을 보낼 시각(오픈 시각 - lead, 네이버 시각 기준) 직전까지 기다린다.
+    (session, url 인자는 예전 호환용이라 쓰지 않음)
+
+    - 시계가 2분 안에 맞춰져 있으면 재사용 → 재시도 때 동기화로 시간을 낭비하지 않음
+    - 목표가 이미 임박/경과했으면 동기화를 건너뛰고 바로 진행
+    - 대기가 길면 60초마다 재동기화 (정각 12초 전부터는 안 함)
+    - 마지막 20ms는 sleep 없이 계속 확인해서 정밀도 확보
+    - 대기가 끝난 직후엔 로그를 찍지 않고(클릭이 늦어지므로) 정보만 넘겨서 클릭 뒤에 출력
+    """
     global _CLICK_TIMING_CTX
-    global _naver_clock  # <--- 이 부분이 맨 위로 올라와야 합니다.
-    
-    log("[대기] C# 방식 NaverClock 밀리초 동기화 시작...")
-    try:
-        sample = _naver_clock.Fetch()
-        _naver_clock.Apply(sample)
-        log(f"[대기] 동기화 완료! RTT: {_naver_clock.RoundTripMs:.1f}ms")
-    except Exception as e:
-        log(f"[경고] 서버 시계 동기화 실패 ({e}) -> 로컬 시스템 시간으로 대체합니다.")
-        class FallbackClock:
-            def Now(self): return datetime.now()
-        _naver_clock = FallbackClock()
+    lead = float(CONFIRM_CLICK_LEAD_SEC)
+    note = ""
+
+    remain0 = (target_open_dt_local - _precise_now()).total_seconds()
+    last_sync_try = time.perf_counter()
+    if _naver_clock.Fresh:
+        last_sync_try -= _naver_clock.Age
+    elif remain0 <= 1.5:
+        note = f"목표 임박/경과({remain0:.2f}s)라 시계 동기화 생략"
+    else:
+        _sync_naver_clock("최초")
+        last_sync_try = time.perf_counter()
 
     while True:
         pause_point()
-        
-        current_time = _naver_clock.Now if hasattr(_naver_clock, 'Now') else datetime.now()
-        remain = (target_open_dt_local - current_time).total_seconds() - CONFIRM_CLICK_LEAD_SEC
-        
+        remain = (target_open_dt_local - _precise_now()).total_seconds() - lead
         if remain <= 0:
             break
-            
-        if remain > 5.0:
+
+        if remain > 12.0 and (time.perf_counter() - last_sync_try) >= 60.0:
+            last_sync_try = time.perf_counter()
+            _sync_naver_clock("재동기화")
+            continue
+
+        if remain > 500.0:
+            time.sleep(5.0)       # 많이 남았을 땐 5초 간격 (정지 반응성 + 리소스 절약)
+        elif remain > 6.0:
             time.sleep(1.0)
         elif remain > 1.0:
             time.sleep(0.1)
@@ -1313,22 +1413,99 @@ def wait_until_server_second(driver: webdriver.Chrome, session: requests.Session
             time.sleep(0.01)
         elif remain > 0.02:
             time.sleep(0.001)
-        else:
-            pass
+        # else: 마지막 20ms는 sleep 없이 계속 확인
 
-    final_time = _naver_clock.Now if hasattr(_naver_clock, 'Now') else datetime.now()
-    log(f"[타겟] 정각 도달 완료! 목표 시각 대기 해제: {final_time.strftime('%H:%M:%S.%f')[:-3]}")
-    
     _CLICK_TIMING_CTX = {
         "target": target_open_dt_local,
-        "measured": True
+        "reached_dt": _precise_now(),
+        "reached_precise": _naver_clock.Ready,
+        "lead": lead,
+        "note": note,
     }
     return True
 
 
-def click_confirm_modal(driver: webdriver.Chrome) -> bool:
-    global _last_confirm_at
+_CONFIRM_CLICK_JS = r"""
+    try {
+        const el = document.getElementById('confirm_modal');
+        if (!el) return ['no_modal', Date.now()];
+        const cls = (el.getAttribute('class') || '');
+        const st  = (el.getAttribute('style') || '');
+        const show = cls.split(/\s+/).includes('show');
+        const disp_block = st.includes('display: block');
+        const visible = !!(show || disp_block) && (el.offsetParent !== null || disp_block);
+        if (!visible) return ['not_shown', Date.now()];
+        const t = Date.now();   // 실제로 참여확인 함수를 부르는 순간(브라우저 시각, ms)
+        if (typeof confirm_func === 'function') {
+            confirm_func();
+            if (window.jQuery) { $('#confirm_modal').modal('hide'); }
+            return ['clicked', t];
+        }
+        const btn = document.querySelector("#confirm_modal button.butn.butn-yellow");
+        if (btn) { btn.click(); return ['clicked', t]; }
+        return ['no_handler', t];
+    } catch(e) { return ['error', Date.now()]; }
+"""
 
+
+def _log_timed_click(ctx: Dict, js_ms, py_before_local: datetime, exec_ms: int):
+    """정각 대기 직후 클릭의 시각 정보를 로그로 남긴다 (클릭이 끝난 뒤에 호출)."""
+    target = ctx["target"]
+    src = "네이버" if ctx.get("reached_precise") else "PC시계"
+    reached = ctx["reached_dt"]
+    log(f"[대기] 목표시각 도달: {src} {reached.strftime('%H:%M:%S.%f')[:-3]} "
+        f"(오픈 대비 {(reached - target).total_seconds():+.3f}s, lead={ctx.get('lead', 0.0):.3f}s)"
+        + (f" ※ {ctx['note']}" if ctx.get("note") else ""))
+
+    if js_ms is None:
+        log(f"[클릭] 참여확인 클릭 (브라우저 호출시각 확인 불가, 처리 {exec_ms}ms)")
+        return
+    disp_local = datetime.fromtimestamp(float(js_ms) / 1000.0)           # 브라우저(PC) 시계 기준
+    transport_ms = int((disp_local - py_before_local).total_seconds() * 1000)
+    if _naver_clock.Ready:
+        pc_minus_naver = (datetime.now() - _naver_clock.Now).total_seconds()
+        disp = disp_local - timedelta(seconds=pc_minus_naver)           # 네이버 시각으로 환산
+        src2 = "네이버"
+    else:
+        disp, src2 = disp_local, "PC시계"
+    log(f"[클릭] 참여확인 클릭: {src2} {disp.strftime('%H:%M:%S.%f')[:-3]} "
+        f"| 오픈 {target.strftime('%H:%M:%S')} 대비 {(disp - target).total_seconds():+.3f}s "
+        f"| 파이썬→브라우저 전달 {transport_ms}ms")
+    log(f"[완료] 참여확인 처리 호출 완료 (+{exec_ms}ms)")
+
+
+def click_confirm_modal(driver: webdriver.Chrome) -> bool:
+    global _last_confirm_at, _CLICK_TIMING_CTX
+
+    ctx = _CLICK_TIMING_CTX
+    _CLICK_TIMING_CTX = None   # 1회용 — 다음 클릭에 예전 정보가 섞이지 않도록 비움
+
+    # ── (1) 정각 대기 직후: 확인/저장/로그 없이 바로 한 번에 클릭 ───────────────────────
+    #     (모달이 떠 있는지도 같은 스크립트 안에서 확인하므로 별도의 왕복이 필요 없음)
+    if ctx is not None and (time.time() - _last_confirm_at) >= 0.2:
+        py_before_local = datetime.now()
+        t_click0 = time.time()
+        try:
+            res = driver.execute_script(_CONFIRM_CLICK_JS)
+        except Exception:
+            res = None
+        exec_ms = int((time.time() - t_click0) * 1000)
+        status = res[0] if res else "error"
+        js_ms = res[1] if res and len(res) > 1 else None
+
+        if status == "clicked":
+            _last_confirm_at = t_click0
+            _log_timed_click(ctx, js_ms, py_before_local, exec_ms)   # 클릭이 끝난 뒤에 로그 출력
+            t_hide = time.time()
+            while time.time() - t_hide < 2.0:
+                if not is_confirm_modal_showing(driver):
+                    log(f"[완료] 참여확인창 닫힘 확인 (+{int((time.time()-t_hide)*1000)}ms)")
+                    return True
+                time.sleep(0.03)
+            return True
+        log(f"[경고] 정각 즉시 클릭 실패(status={status}) → 일반 경로로 다시 시도")
+
+    # ── (2) 일반 경로: 모달이 뜰 때까지 기다렸다가 클릭 (즉시참여 등 정각 대기가 없는 경우) ──
     t0 = time.time()
     while time.time() - t0 < 2.0:
         if is_confirm_modal_showing(driver):
@@ -1344,11 +1521,7 @@ def click_confirm_modal(driver: webdriver.Chrome) -> bool:
         return True
     _last_confirm_at = now
 
-    global _CLICK_TIMING_CTX
     click_local_dt = datetime.now()
-    timing_ctx = _CLICK_TIMING_CTX
-    _CLICK_TIMING_CTX = None
-
     t_click0 = time.time()
     called = driver.execute_script("""
         try {
@@ -1362,13 +1535,7 @@ def click_confirm_modal(driver: webdriver.Chrome) -> bool:
             return false;
         } catch(e) { return false; }
     """)
-
-    local_str = click_local_dt.strftime('%H:%M:%S.%f')[:-3]
-    if timing_ctx:
-        log(f"[클릭] 참여확인 클릭 시각: 로컬 {local_str} | 오픈 {timing_ctx['target'].strftime('%H:%M:%S')}")
-    else:
-        log(f"[클릭] 참여확인 클릭 시각: 로컬 {local_str} (정각 대기 없이 즉시 클릭)")
-
+    log(f"[클릭] 참여확인 클릭 시각: PC시계 {click_local_dt.strftime('%H:%M:%S.%f')[:-3]} (정각 대기 없이 즉시 클릭)")
     if called:
         log(f"[완료] 참여확인 처리 호출 완료 (+{int((time.time()-t_click0)*1000)}ms)")
 
@@ -1390,11 +1557,13 @@ def detail_should_abort(driver: webdriver.Chrome, current_csq: str = "") -> bool
             if not text:
                 continue
 
+            # 종료 케이스
             if any(k in text for k in ["종료", "마감", "참여불가", "신청불가", "모집종료"]):
                 log(f"[경고] 종료 버튼 감지: '{text}' (csq={current_csq})")
                 _save_abort_html(driver, current_csq, "closed")
                 return True
 
+            # 날짜 파싱 케이스: "05월 21일 12시에 참여가능"
             m = re.search(r"(\d{2})월\s*(\d{2})일", text)
             if m:
                 month, day = int(m.group(1)), int(m.group(2))
@@ -1414,6 +1583,7 @@ def detail_should_abort(driver: webdriver.Chrome, current_csq: str = "") -> bool
 
 
 def _save_abort_html(driver: webdriver.Chrome, csq: str, reason: str):
+    """롤오버/종료 감지 시 HTML을 무조건 저장 (LOG_SAVE 설정 무관)"""
     try:
         html = driver.page_source or ""
         if not html:
@@ -1433,7 +1603,7 @@ def _save_abort_html(driver: webdriver.Chrome, csq: str, reason: str):
 def wait_and_apply_in_detail(driver: webdriver.Chrome, current_csq: str, failed_once: set, target_open_dt: Optional[datetime], is_target: bool = False, campaign_name: str = "") -> bool:
     t0 = time.time()
     detail_url = driver.current_url
-    session = requests.Session()
+    session = build_requests_session_from_driver(driver)
     confirm_armed = False
     prejoin_started = False
     last_prejoin_try = 0.0
@@ -1441,7 +1611,7 @@ def wait_and_apply_in_detail(driver: webdriver.Chrome, current_csq: str, failed_
     account_try_index = 0
     account_count_hint = 0
     congestion_retry_count = 0
-    sec_to_open: Optional[float] = None
+    sec_to_open: Optional[float] = None  # ⭐ 오픈까지 남은 시간(적응형 폴링 간격 계산용)
     name_tag = f" [{campaign_name}]" if campaign_name else ""
 
     while True:
@@ -1462,6 +1632,7 @@ def wait_and_apply_in_detail(driver: webdriver.Chrome, current_csq: str, failed_
 
             if target_open_dt:
                 sec_to_open = (target_open_dt - datetime.now()).total_seconds()
+                # 타겟 CSQ는 오픈시간이 아무리 멀어도 감시 복귀하지 않고 계속 대기
                 if not is_target and sec_to_open > (HOT_WINDOW_SEC + 30) and ("참여가능" not in body_text):
                     log(f"[복귀] 오픈시간이 멀어짐({int(sec_to_open)}s) → 감시 복귀: {current_csq}")
                     goto_list_page(driver, force_get=True)
@@ -1605,15 +1776,18 @@ def enter_detail_and_wait(driver: webdriver.Chrome, card_el, csq: str, failed_on
         close_site_popups(driver, force=True)
         save_current_page_html(driver, f"detail_{csq}_enter")
 
+        # 캠페인명: 카드에서 전달된 title 우선, 없으면 상세 페이지에서 여러 방식으로 추출 시도
         campaign_name = title
         if not campaign_name:
             try:
                 campaign_name = driver.execute_script(r"""
+                    // 0) 이 사이트 특유의 툴팁 패턴 우선 시도
                     const tip = document.querySelector('.ctooltip-text');
                     if (tip) {
                         const t = (tip.innerText || tip.textContent || '').trim();
                         if (t) return t;
                     }
+                    // 1) 자주 쓰이는 제목류 셀렉터
                     const sels = ['h1', 'h2', 'h3', '[class*="title"]', '[class*="name"]',
                                   '[class*="subject"]', '.campaign-title', '.item-title', '.goods_name'];
                     for (const sel of sels) {
@@ -1621,8 +1795,10 @@ def enter_detail_and_wait(driver: webdriver.Chrome, card_el, csq: str, failed_on
                         const t = el ? (el.innerText || '').trim().split('\n')[0] : '';
                         if (t) return t;
                     }
+                    // 2) og:title 메타태그
                     const og = document.querySelector('meta[property="og:title"]');
                     if (og && og.content) return og.content.trim();
+                    // 3) 브라우저 탭 제목 (사이트명 접미사 제거 시도)
                     if (document.title) {
                         return document.title.split(/[|\-–]/)[0].trim();
                     }
@@ -1632,10 +1808,11 @@ def enter_detail_and_wait(driver: webdriver.Chrome, card_el, csq: str, failed_on
                 pass
         name_tag = f" [{campaign_name}]" if campaign_name else ""
         if not campaign_name:
-            log(f"[안내] csq={csq} 상품명 추출 실패 (셀렉터 미매칭)")
+            log(f"[안내] csq={csq} 상품명 추출 실패 (셀렉터 미매칭) → 관리자에게 페이지 구조 확인 요청 필요")
         log(f"[진입] 상세 선점 진입: csq={csq}{name_tag}")
         return wait_and_apply_in_detail(driver, csq, failed_once, target_open_dt, is_target=is_target, campaign_name=campaign_name)
     except StopRequested:
+        # ⭐ 종료/일시정지 요청으로 인한 중단은 "실패"가 아니므로 failed_once에 추가하지 않고 그대로 전파
         raise
     except Exception as e:
         log(f"[오류] 상세 진입 실패: {e}")
@@ -1691,7 +1868,9 @@ def scan_and_pick(driver: webdriver.Chrome, failed_once: set) -> Tuple[Optional[
         local_best_soon = picked_soon
 
         global TARGET_CSQ
+        # 콤마(,)로 구분된 문자열을 분리하여 타겟 리스트 생성 (공백 자동 제거) — 적힌 순서 = 우선순위
         target_list = [t.strip() for t in TARGET_CSQ.split(",") if t.strip()]
+        # ⭐ 이 스테이지에서 조건을 만족한 타겟들을 일단 모아두고, 루프가 끝난 뒤 우선순위로 하나만 선택
         target_open_now_matches: List[Dict] = []
         target_hot_matches: List[Dict] = []
 
@@ -1707,6 +1886,7 @@ def scan_and_pick(driver: webdriver.Chrome, failed_once: set) -> Tuple[Optional[
                 amount_attr = item_raw.get("amount") or ""
                 jointime_str = item_raw.get("jointime") or ""
 
+                # data-jointime 속성으로 오픈 시간 판단
                 jointime_dt = None
                 if jointime_str:
                     try:
@@ -1719,13 +1899,25 @@ def scan_and_pick(driver: webdriver.Chrome, failed_once: set) -> Tuple[Optional[
                 if open_dt:
                     secs_to_open = (open_dt - now).total_seconds()
 
+                # ============================================================
+                # ⭐ 스나이핑 모드 (여러 타겟 CSQ 일치 시 다중 처리)
+                # ============================================================
                 if target_list and csq in target_list:
+                    # 영구저장에 있으면 타겟이라도 완전 스킵
                     if csq in success_csq:
                         log(f"[스킵] csq={csq} rsn=영구저장 완료")
                         continue
-                    
+                    # ⭐ 타겟은 이번실행 실패 목록에 있어도 완전히 포기하지 않고,
+                    #    매 스캔마다 최신 오픈시간을 다시 확인해서 재도전함
+                    #    (일반 후보와 달리 사용자가 직접 지정한 타겟이라 계속 챙김)
+                    # jointime이 이미 지났거나 참여가능 텍스트가 있으면 즉시 참여
                     jointime_passed_target = jointime_dt is not None and jointime_dt <= now
                     text_says_open_now = "참여가능" in text and ("진행중" in text or "대기중" in text)
+
+                    # ⭐ 카드 화면 텍스트에 더 미래의 새 시간 정보(open_dt)가 보이면 그걸 우선 신뢰.
+                    #    jointime 속성값이 (사이트가 아직 못 갱신해서) 과거로 멈춰있어도,
+                    #    화면에 다음 회차 시간이 표시돼 있으면 "즉시 참여 가능"으로 오판하지 않고
+                    #    그 새 시간을 타겟의 새 목표시각으로 갱신함.
                     has_fresh_future_time = open_dt is not None and secs_to_open is not None and secs_to_open > 0
 
                     if has_fresh_future_time:
@@ -1734,18 +1926,24 @@ def scan_and_pick(driver: webdriver.Chrome, failed_once: set) -> Tuple[Optional[
                         is_open_now = jointime_passed_target or text_says_open_now
 
                     if is_open_now:
+                        # ⭐ 즉시 리턴하지 않고 일단 후보로만 모아둠 (같은 스테이지에 동시에 여러 타겟이 열렸을 수 있음)
                         target_open_now_matches.append({
                             "csq": csq,
                             "card_index": item_raw.get("idx"),
                             "title": item_raw.get("title") or "",
                         })
                     else:
+                        # ⭐ jointime이 과거로 멈춰있어도 화면에 미래 시간(open_dt)이 있으면 그걸 우선 사용
                         target_open_dt = open_dt if has_fresh_future_time else (jointime_dt or open_dt)
                         target_secs = (target_open_dt - now).total_seconds() if target_open_dt else None
                         open_time_str = target_open_dt.strftime("%m/%d %H:%M:%S") if target_open_dt else "?"
 
+                        # ⭐ 오픈 임박 기준(HOT_WINDOW_SEC) 이내일 때만 다른 후보보다 최우선으로 즉시 상세 진입.
+                        #    아직 많이 남았으면 여기서 붙잡지 않고 이번 스캔에서 다른 일반 캠페인도 계속 탐색/참여.
+                        #    (target_secs를 아직 모르는 경우는 정확한 오픈시각 확인을 위해 예외적으로 즉시 진입)
                         if target_secs is None or target_secs <= HOT_WINDOW_SEC:
                             wait_msg = f"{int(target_secs)}초 남음" if target_secs and target_secs > 0 else "상세 페이지에서 오픈시간 확인 예정"
+                            # ⭐ 이것도 즉시 리턴하지 않고 후보로만 모아둠
                             target_hot_matches.append({
                                 "csq": csq,
                                 "card_index": item_raw.get("idx"),
@@ -1759,6 +1957,7 @@ def scan_and_pick(driver: webdriver.Chrome, failed_once: set) -> Tuple[Optional[
                             title_tag = f" [{item_raw.get('title') or ''}]" if item_raw.get("title") else ""
                             log(f"[타겟] 타겟 {csq}{title_tag} 아직 여유 있음 ({int(target_secs)}초 남음, 시작={open_time_str}, 임박기준 {HOT_WINDOW_SEC}초) → 지금은 다른 캠페인 탐색/참여 계속")
                     continue
+                # ============================================================
 
                 ctype = detect_type(text, html)
                 deposit_mode = detect_deposit_mode(text, html)
@@ -1806,8 +2005,12 @@ def scan_and_pick(driver: webdriver.Chrome, failed_once: set) -> Tuple[Optional[
                 }
 
                 def item_sort_key(i: dict) -> tuple:
+                    # 1순위: 배송타입 (REAL=0, ETC=1)
+                    # 2순위: 쇼핑몰 (NAVER=0, OTHER=1)
+                    # 3순위: 가격 내림차순
                     return (type_priority(i["type"]), 0 if i["shop"] == "NAVER" else 1, -i["price"])
 
+                # jointime 기반: 오픈 시간이 현재보다 과거면 즉시 참여 가능
                 jointime_passed = jointime_dt is not None and jointime_dt <= now
                 eligible_now = eligible_base and (
                     jointime_passed
@@ -1845,10 +2048,12 @@ def scan_and_pick(driver: webdriver.Chrome, failed_once: set) -> Tuple[Optional[
             except Exception as e:
                 log(f"[경고] 카드 검사 오류 stage={stage_label}: {e}")
 
+        # ⭐ 이 스테이지에서 동시에 조건을 만족한 타겟이 여러 개면, 타겟 CSQ 칸에 적힌 순서(우선순위)로 하나만 선택.
+        #    타겟은 항상 일반 후보(local_best_now/soon)보다 우선하므로 여기서 결정되면 그대로 반환.
         if target_open_now_matches:
             if len(target_open_now_matches) > 1:
                 order_str = ", ".join(m["csq"] for m in sorted(target_open_now_matches, key=lambda m: target_list.index(m["csq"])))
-                log(f"[타겟] 동시에 {len(target_open_now_matches)}개 타겟 즉시참여 가능 감지 ({order_str}) → 우선순위 1순위 선택")
+                log(f"[타겟] 동시에 {len(target_open_now_matches)}개 타겟 즉시참여 가능 감지 ({order_str}) → 적힌 순서상 우선순위 1순위 선택")
             best = min(target_open_now_matches, key=lambda m: target_list.index(m["csq"]))
             log(f"[타겟] [타겟 발견] {best['csq']} 즉시 참여 가능 → 즉시 참여 시도!")
             picked_now = {"csq": best["csq"], "card_index": best["card_index"], "price": 0, "type": "TARGET", "title": best["title"]}
@@ -1858,7 +2063,7 @@ def scan_and_pick(driver: webdriver.Chrome, failed_once: set) -> Tuple[Optional[
         if target_hot_matches:
             if len(target_hot_matches) > 1:
                 order_str = ", ".join(m["csq"] for m in sorted(target_hot_matches, key=lambda m: target_list.index(m["csq"])))
-                log(f"[타겟] 동시에 {len(target_hot_matches)}개 타겟 오픈 임박 감지 ({order_str}) → 우선순위 1순위 선택")
+                log(f"[타겟] 동시에 {len(target_hot_matches)}개 타겟 오픈 임박 감지 ({order_str}) → 적힌 순서상 우선순위 1순위 선택")
             best = min(target_hot_matches, key=lambda m: target_list.index(m["csq"]))
             log(f"[타겟] [타겟 발견] {best['csq']} ({best['wait_msg']}, 시작={best['open_time_str']}) → 오픈 임박, 다른 후보보다 최우선으로 즉시 상세 진입 후 대기!")
             picked_now = local_best_now
@@ -1953,6 +2158,7 @@ def main():
                 picked_now, picked_soon = scan_and_pick(driver, failed_once)
                 log(f"[진행] scan_and_pick 반환 완료 (+{int((time.time()-t_loop0)*1000)}ms)")
 
+                # 1) 오픈 임박 → 상세 선점
                 if picked_soon is not None:
                     csq = picked_soon["csq"]
                     price = picked_soon["price"]
@@ -1975,6 +2181,7 @@ def main():
                     loop_status = f"soon:{csq}"
                     continue
 
+                # 2) 즉시 참여가능 → 즉시 참여
                 if picked_now is not None:
                     csq = picked_now["csq"]
                     picked_title_now = picked_now.get("title") or ""
@@ -2020,6 +2227,7 @@ def main():
                             time.sleep(0.25)
                             loop_status = f"soon:{csq}"
                         else:
+                            # ⭐ 새롭게 방어되는 구간! (버튼이 아예 안 보일 때)
                             log(f"[경고] 참여 버튼 없음/지연 → 이번 실행 스킵: {csq}")
                             failed_once.add(csq)
                             goto_list_page(driver, force_get=True)
@@ -2039,6 +2247,7 @@ def main():
 
                     continue
 
+                # 3) 후보 없음 → 로그만
                 log(f"[{SITE_NAME}_NONE] 후보 없음")
                 loop_status = "none"
                 time.sleep(BASE_REFRESH_INTERVAL)
@@ -2062,6 +2271,7 @@ def main():
 
 
 def _force_kill_driver_processes(driver) -> None:
+    """driver.quit()이 뭔가 남겼을 경우를 대비해 남은 chromedriver/chrome 프로세스를 강제 정리"""
     pid = None
     try:
         pid = driver.service.process.pid
