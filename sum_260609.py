@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-LOGIC_LAST_MODIFIED = "2026-10-18"  # ⭐ 이 파일 수정할 때마다 갱신
+LOGIC_LAST_MODIFIED = "2026-10-27"  # ⭐ 이 파일 수정할 때마다 갱신
 
 import os
 import re
@@ -785,6 +785,7 @@ def handle_result_alert(driver: webdriver.Chrome, current_csq: Optional[str], fa
         return "none"
 
     log(f"[결과] 결과 메시지: {msg} (csq={current_csq}{name_tag})")
+    _log_tuning_summary(msg)
     save_current_page_html(driver, f"alert_{current_csq or 'unknown'}")
 
     result = "fail"
@@ -812,6 +813,7 @@ def handle_result_alert(driver: webdriver.Chrome, current_csq: Optional[str], fa
             result = "fail"
     elif current_csq and "참여 가능한 시간이 아닙니다" in msg:
         log(f"[대기] 아직 오픈 시간이 아님(서버 알림) → 블랙리스트 제외 후 계속 감시: {current_csq}")
+        log("[경고] 너무 일찍 도착했어요 — click_tuning.txt의 lead_ms를 낮춰보세요")
         result = "fail"
     elif current_csq and ("참여 요청이 많아" in msg or "다시 참여" in msg):
         # ⭐ 서버가 명시적으로 재시도를 권하는 혼잡 메시지 → 실패 처리 대신 즉시 재시도하도록 신호
@@ -1368,6 +1370,276 @@ def _precise_now() -> datetime:
     return datetime.now()
 
 
+# ── 클릭 튜닝 설정 파일 (click_tuning.txt) ─────────────────────────────────────
+# 메모장으로 고치고 저장하면 다음 참여부터 바로 적용 (프로그램 재시작/GitHub 업로드 불필요).
+# 폴더(인스턴스)마다 따로 둘 수 있어서, PC/계정별로 값을 다르게 두고 같은 캠페인에서 비교해볼 수 있음.
+_TUNING_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "click_tuning.txt")
+_TUNING_DEFAULT_TEXT = """# 정각 클릭 튜닝 — 메모장으로 고치고 저장하면 다음 참여부터 바로 적용됩니다 (재시작 불필요)
+#
+# lead_ms : 클릭을 정각보다 몇 ms 먼저 보낼지. 0 = 정각에 딱 맞춤, 숫자가 클수록 더 일찍 보냅니다.
+#           결과가 "너무 일찍 도착"으로 나오면 값을 낮추세요. (로그의 [튜닝] 줄 참고)
+# inpage  : 1 = 브라우저 안에서 정각에 직접 클릭 (파이썬→브라우저 전달 지연이 없어짐. 실전 검증 전)
+#           0 = 파이썬이 정각에 클릭 명령을 보냄 (기존 방식, 검증됨)
+# warmup  : 1 = 정각 2~3초 전에 사이트와의 연결을 한 번 확인해 둠 (연결이 식어서 첫 요청이 느려지는 것 방지)
+lead_ms = 0
+inpage = 0
+warmup = 1
+"""
+_LAST_TIMED_CLICK: Optional[Dict] = None   # 마지막 정각 클릭 기록 ([튜닝] 요약 줄용, 1회용)
+
+
+def _read_tuning() -> Dict:
+    """click_tuning.txt를 읽어 {lead_ms, inpage, warmup, warn} 반환. 없으면 기본값으로 파일을 만들어 둠."""
+    cfg = {"lead_ms": float(CONFIRM_CLICK_LEAD_SEC) * 1000.0, "inpage": False, "warmup": True, "warn": ""}
+    try:
+        if not os.path.exists(_TUNING_FILE):
+            try:
+                with open(_TUNING_FILE, "w", encoding="utf-8") as f:
+                    f.write(_TUNING_DEFAULT_TEXT)
+            except Exception:
+                pass
+            return cfg
+        with open(_TUNING_FILE, "r", encoding="utf-8-sig") as f:
+            lines = f.read().splitlines()
+    except Exception as e:
+        cfg["warn"] = f"click_tuning.txt를 읽지 못해 기본값 사용: {e}"
+        return cfg
+
+    for raw in lines:
+        line = raw.split("#", 1)[0].strip()
+        if not line or "=" not in line:
+            continue
+        key, val = [x.strip() for x in line.split("=", 1)]
+        key = key.lower()
+        try:
+            if key == "lead_ms":
+                v = float(val)
+                cfg["lead_ms"] = max(-100.0, min(500.0, v))
+                if v != cfg["lead_ms"]:
+                    cfg["warn"] += f"lead_ms={v:g}는 범위(-100~500)를 벗어나 {cfg['lead_ms']:g}로 보정됨. "
+            elif key == "inpage":
+                cfg["inpage"] = val in ("1", "true", "on", "yes")
+            elif key == "warmup":
+                cfg["warmup"] = val in ("1", "true", "on", "yes")
+        except ValueError:
+            cfg["warn"] += f"'{raw.strip()}' 줄을 읽지 못해 무시함. "
+    return cfg
+
+
+def _naive_epoch_ms(dt: datetime) -> float:
+    return (dt - datetime(1970, 1, 1)).total_seconds() * 1000.0
+
+
+# ── 연결 예열: 정각 2~3초 전에 같은 사이트로 작은 요청 2번 (결과는 클릭 뒤에 읽음 → 대기를 막지 않음) ──
+_WARM_JS = r"""
+window.__gt_warm = {done: false};
+(async () => {
+    const w = window.__gt_warm;
+    const one = async () => {
+        const ac = new AbortController();
+        const to = setTimeout(() => ac.abort(), 900);
+        const t0 = performance.now();
+        try {
+            const r = await fetch(location.origin + '/', {method: 'HEAD', cache: 'no-store',
+                                                           credentials: 'same-origin', signal: ac.signal});
+            clearTimeout(to);
+            return [Math.round((performance.now() - t0) * 10) / 10, r.status];
+        } catch (e) {
+            clearTimeout(to);
+            return [Math.round((performance.now() - t0) * 10) / 10, 'err'];
+        }
+    };
+    w.a = await one();
+    w.b = await one();
+    w.done = true;
+})();
+return true;
+"""
+
+
+def _warm_connection(driver) -> None:
+    try:
+        driver.execute_script(_WARM_JS)
+    except Exception:
+        pass
+
+
+def _read_warm_result(driver) -> str:
+    try:
+        w = driver.execute_script("return window.__gt_warm || null;")
+    except Exception:
+        return ""
+    if not w or not w.get("done"):
+        return ""
+    a, b = w.get("a") or [0, "?"], w.get("b") or [0, "?"]
+    hint = ""
+    try:
+        if float(a[0]) > float(b[0]) * 1.8 and float(a[0]) - float(b[0]) > 15:
+            hint = " → 첫 요청이 눈에 띄게 느림(연결이 식어 있었음, 예열이 효과 봄)"
+        else:
+            hint = " → 두 요청 속도가 비슷(연결은 이미 따뜻했음)"
+    except Exception:
+        pass
+    return f"첫 요청 {a[0]}ms({a[1]}) / 두 번째 {b[0]}ms({b[1]}){hint}"
+
+
+# ── 브라우저 안에서 정각에 직접 클릭 (inpage=1) ─────────────────────────────────────
+# 파이썬이 크롬에 명령을 보내는 지연(2~4ms, PC가 바쁘면 더 크게 흔들림)을 없애기 위해,
+# 브라우저 시계로 환산한 발사 시각을 페이지에 심어두고 페이지가 직접 그 시각에 누른다.
+_JS_CLICK_FN = r"""
+function __gt_click(nowFn) {
+    try {
+        const el = document.getElementById('confirm_modal');
+        if (!el) return ['no_modal', nowFn()];
+        const cls = (el.getAttribute('class') || '');
+        const st  = (el.getAttribute('style') || '');
+        const show = cls.split(/\s+/).includes('show');
+        const disp_block = st.includes('display: block');
+        const visible = !!(show || disp_block) && (el.offsetParent !== null || disp_block);
+        if (!visible) return ['not_shown', nowFn()];
+        const t = nowFn();   // 참여확인 함수를 실제로 부르는 순간
+        if (typeof confirm_func === 'function') {
+            confirm_func();
+            if (window.jQuery) { $('#confirm_modal').modal('hide'); }
+            return ['clicked', t];
+        }
+        const btn = document.querySelector("#confirm_modal button.butn.butn-yellow");
+        if (btn) { btn.click(); return ['clicked', t]; }
+        return ['no_handler', t];
+    } catch (e) { return ['error', nowFn()]; }
+}
+"""
+_CONFIRM_CLICK_JS = _JS_CLICK_FN + "\nreturn __gt_click(() => Date.now());"
+
+_INPAGE_ARM_JS = _JS_CLICK_FN + r"""
+const fireAt = arguments[0];
+if (window.__gt_timer) { try { clearTimeout(window.__gt_timer); } catch (e) {} }
+window.__gt = {fired: false, status: null, t: null};
+const perfNow = () => performance.timeOrigin + performance.now();
+function fire() {
+    const g = window.__gt;
+    if (!g || g.fired) return;
+    g.fired = true;                       // 먼저 표시 → 파이썬 쪽 보조 클릭과 중복 방지
+    const r = __gt_click(perfNow);
+    g.status = r[0]; g.t = r[1];
+}
+function tick() {
+    const rem = fireAt - perfNow();
+    if (rem <= 0) { fire(); return; }
+    if (rem > 30) { window.__gt_timer = setTimeout(tick, Math.max(1, rem - 25)); return; }
+    while (perfNow() < fireAt) {}         // 마지막 ~30ms는 타이머 대신 계속 확인
+    fire();
+}
+tick();
+return true;
+"""
+
+_INPAGE_FALLBACK_JS = _JS_CLICK_FN + r"""
+if (window.__gt && window.__gt.fired) return ['already', null];
+if (window.__gt) { window.__gt.fired = true; }
+return __gt_click(() => performance.timeOrigin + performance.now());
+"""
+
+_INPAGE_DISARM_JS = r"""
+if (window.__gt) { window.__gt.fired = true; }
+if (window.__gt_timer) { try { clearTimeout(window.__gt_timer); } catch (e) {} }
+return true;
+"""
+
+
+def _sync_browser_clock(driver, samples: int = 6):
+    """브라우저 시계와 정밀 시계의 차이(ms)를 잰다. 왕복이 가장 짧은 샘플 사용 → 오차 ≈ ±왕복/2."""
+    best = None
+    for _ in range(samples):
+        a = time.perf_counter()
+        na = _precise_now()
+        js = driver.execute_script("return performance.timeOrigin + performance.now();")
+        nb = _precise_now()
+        b = time.perf_counter()
+        rtt = b - a
+        mid = _naive_epoch_ms(na) + (_naive_epoch_ms(nb) - _naive_epoch_ms(na)) / 2.0
+        off = float(js) - mid
+        if best is None or rtt < best[1]:
+            best = (off, rtt)
+    return best
+
+
+def _arm_inpage_click(driver, target: datetime, lead_s: float) -> Optional[Dict]:
+    if STOP_SIGNAL.is_set() or PAUSED.is_set():
+        return None
+    try:
+        off_ms, rtt_s = _sync_browser_clock(driver)
+        fire_at = _naive_epoch_ms(target) - lead_s * 1000.0 + off_ms
+        driver.execute_script(_INPAGE_ARM_JS, fire_at)
+        return {"offset_ms": off_ms, "rtt_ms": rtt_s * 1000.0, "fire_at": fire_at}
+    except Exception as e:
+        log(f"[경고] 브라우저 내부 예약 실패 → 파이썬 방식으로 진행: {e}")
+        return None
+
+
+def _disarm_inpage_click(driver) -> None:
+    try:
+        driver.execute_script(_INPAGE_DISARM_JS)
+    except Exception:
+        pass
+
+
+def _collect_inpage_result(driver, deadline_s: float = 0.35):
+    """예약된 클릭 결과를 받아온다. 제때 안 눌렸으면 파이썬이 대신 누름(중복 클릭은 페이지 안 플래그로 방지).
+    반환: (status, 브라우저시각(ms, epoch) 또는 None, 경로 'inpage'/'fallback'/'none')"""
+    def poll():
+        try:
+            return driver.execute_script("const g = window.__gt; return (g && g.status) ? [g.status, g.t] : null;")
+        except Exception:
+            return None
+
+    t_end = time.perf_counter() + deadline_s
+    while time.perf_counter() < t_end:
+        r = poll()
+        if r:
+            return r[0], r[1], "inpage"
+        time.sleep(0.003)
+
+    try:
+        r = driver.execute_script(_INPAGE_FALLBACK_JS)
+    except Exception:
+        r = None
+    if r and r[0] != "already":
+        return r[0], r[1], "fallback"
+
+    t_end = time.perf_counter() + 0.5       # 그 사이 예약 타이머가 눌렀을 수 있으니 결과를 조금 더 기다림
+    while time.perf_counter() < t_end:
+        r = poll()
+        if r:
+            return r[0], r[1], "inpage"
+        time.sleep(0.005)
+    return "error", None, "none"
+
+
+def _log_tuning_summary(msg: str) -> None:
+    """정각 클릭 직후 첫 결과 메시지에 대해 한 줄 요약을 남긴다 (여러 번 모아서 lead 조정에 쓰기 위함)."""
+    global _LAST_TIMED_CLICK
+    rec = _LAST_TIMED_CLICK
+    if not rec:
+        return
+    _LAST_TIMED_CLICK = None
+    if time.time() - rec.get("t", 0) > 15.0:      # 오래된 기록이 엉뚱한 결과에 붙지 않도록
+        return
+    if "참여 가능한 시간이 아닙니다" in msg:
+        label = "너무 일찍 도착 (서버: 아직 오픈 전) → lead를 낮추세요"
+    elif "참여 요청이 많아" in msg:
+        label = "혼잡 (서버가 거절)"
+    elif "캠페인에 참여 되었습니다" in msg:
+        label = "성공"
+    elif "이미 참여" in msg:
+        label = "이미 참여"
+    elif "마감" in msg:
+        label = "마감"
+    else:
+        label = "기타"
+    log(f"[튜닝] lead {rec['lead_ms']:g}ms | 클릭 오픈대비 {rec['after_open_s']:+.3f}s ({rec['path']}) | 결과: {label}")
+
+
 def wait_until_server_second(driver: webdriver.Chrome, session: requests.Session, url: str, target_open_dt_local: datetime) -> bool:
     """참여확인 클릭을 보낼 시각(오픈 시각 - lead, 네이버 시각 기준) 직전까지 기다린다.
     (session, url 인자는 예전 호환용이라 쓰지 않음)
@@ -1375,14 +1647,22 @@ def wait_until_server_second(driver: webdriver.Chrome, session: requests.Session
     - 시계가 2분 안에 맞춰져 있으면 재사용 → 재시도 때 동기화로 시간을 낭비하지 않음
     - 목표가 이미 임박/경과했으면 동기화를 건너뛰고 바로 진행
     - 대기가 길면 60초마다 재동기화 (정각 12초 전부터는 안 함)
+    - 정각 2~3초 전: 사이트와 연결 예열(warmup=1), 정각 0.6초 전: 브라우저 내부 예약(inpage=1)
     - 마지막 20ms는 sleep 없이 계속 확인해서 정밀도 확보
     - 대기가 끝난 직후엔 로그를 찍지 않고(클릭이 늦어지므로) 정보만 넘겨서 클릭 뒤에 출력
     """
     global _CLICK_TIMING_CTX
-    lead = float(CONFIRM_CLICK_LEAD_SEC)
+    tun = _read_tuning()
+    lead = tun["lead_ms"] / 1000.0
     note = ""
 
     remain0 = (target_open_dt_local - _precise_now()).total_seconds()
+    if remain0 > 1.5:
+        if tun["warn"]:
+            log(f"[경고] click_tuning.txt: {tun['warn']}")
+        log(f"[설정] 클릭 lead {tun['lead_ms']:g}ms | 브라우저 내부 예약 {'켜짐' if tun['inpage'] else '꺼짐'} "
+            f"| 연결 예열 {'켜짐' if tun['warmup'] else '꺼짐'}  (click_tuning.txt)")
+
     last_sync_try = time.perf_counter()
     if _naver_clock.Fresh:
         last_sync_try -= _naver_clock.Age
@@ -1392,86 +1672,78 @@ def wait_until_server_second(driver: webdriver.Chrome, session: requests.Session
         _sync_naver_clock("최초")
         last_sync_try = time.perf_counter()
 
-    while True:
-        pause_point()
-        remain = (target_open_dt_local - _precise_now()).total_seconds() - lead
-        if remain <= 0:
-            break
+    warmed = False
+    armed_tried = False
+    arm_info = None
+    try:
+        while True:
+            pause_point()
+            remain = (target_open_dt_local - _precise_now()).total_seconds() - lead
+            if remain <= 0:
+                break
 
-        if remain > 12.0 and (time.perf_counter() - last_sync_try) >= 60.0:
-            last_sync_try = time.perf_counter()
-            _sync_naver_clock("재동기화")
-            continue
+            if remain > 12.0 and (time.perf_counter() - last_sync_try) >= 60.0:
+                last_sync_try = time.perf_counter()
+                _sync_naver_clock("재동기화")
+                continue
 
-        if remain > 500.0:
-            time.sleep(5.0)       # 많이 남았을 땐 5초 간격 (정지 반응성 + 리소스 절약)
-        elif remain > 6.0:
-            time.sleep(1.0)
-        elif remain > 1.0:
-            time.sleep(0.1)
-        elif remain > 0.1:
-            time.sleep(0.01)
-        elif remain > 0.02:
-            time.sleep(0.001)
-        # else: 마지막 20ms는 sleep 없이 계속 확인
+            if tun["warmup"] and driver is not None and not warmed and 1.2 < remain <= 3.0:
+                warmed = True
+                _warm_connection(driver)
+
+            if tun["inpage"] and driver is not None and not armed_tried and 0.15 < remain <= 0.6:
+                armed_tried = True
+                arm_info = _arm_inpage_click(driver, target_open_dt_local, lead)
+                continue
+
+            if remain > 500.0:
+                time.sleep(5.0)       # 많이 남았을 땐 5초 간격 (정지 반응성 + 리소스 절약)
+            elif remain > 6.0:
+                time.sleep(1.0)
+            elif remain > 1.0:
+                time.sleep(0.1)
+            elif remain > 0.1:
+                time.sleep(0.01)
+            elif remain > 0.02:
+                time.sleep(0.001)
+            # else: 마지막 20ms는 sleep 없이 계속 확인
+    except BaseException:
+        # 정지/오류로 빠져나가면 브라우저에 심어둔 예약 클릭이 혼자 눌리지 않도록 해제
+        if arm_info is not None and driver is not None:
+            _disarm_inpage_click(driver)
+        raise
 
     _CLICK_TIMING_CTX = {
         "target": target_open_dt_local,
         "reached_dt": _precise_now(),
         "reached_precise": _naver_clock.Ready,
         "lead": lead,
+        "lead_ms": tun["lead_ms"],
         "note": note,
+        "inpage": arm_info,
+        "warmed": warmed,
     }
     return True
 
 
-_CONFIRM_CLICK_JS = r"""
-    try {
-        const el = document.getElementById('confirm_modal');
-        if (!el) return ['no_modal', Date.now()];
-        const cls = (el.getAttribute('class') || '');
-        const st  = (el.getAttribute('style') || '');
-        const show = cls.split(/\s+/).includes('show');
-        const disp_block = st.includes('display: block');
-        const visible = !!(show || disp_block) && (el.offsetParent !== null || disp_block);
-        if (!visible) return ['not_shown', Date.now()];
-        const t = Date.now();   // 실제로 참여확인 함수를 부르는 순간(브라우저 시각, ms)
-        if (typeof confirm_func === 'function') {
-            confirm_func();
-            if (window.jQuery) { $('#confirm_modal').modal('hide'); }
-            return ['clicked', t];
-        }
-        const btn = document.querySelector("#confirm_modal button.butn.butn-yellow");
-        if (btn) { btn.click(); return ['clicked', t]; }
-        return ['no_handler', t];
-    } catch(e) { return ['error', Date.now()]; }
-"""
-
-
-def _log_timed_click(ctx: Dict, js_ms, py_before_local: datetime, exec_ms: int):
+def _log_timed_click(ctx: Dict, disp_dt: Optional[datetime], path_label: str, extra: str, exec_ms: int):
     """정각 대기 직후 클릭의 시각 정보를 로그로 남긴다 (클릭이 끝난 뒤에 호출)."""
+    global _LAST_TIMED_CLICK
     target = ctx["target"]
     src = "네이버" if ctx.get("reached_precise") else "PC시계"
     reached = ctx["reached_dt"]
     log(f"[대기] 목표시각 도달: {src} {reached.strftime('%H:%M:%S.%f')[:-3]} "
-        f"(오픈 대비 {(reached - target).total_seconds():+.3f}s, lead={ctx.get('lead', 0.0):.3f}s)"
+        f"(오픈 대비 {(reached - target).total_seconds():+.3f}s, lead={ctx.get('lead_ms', 0.0):g}ms)"
         + (f" ※ {ctx['note']}" if ctx.get("note") else ""))
 
-    if js_ms is None:
-        log(f"[클릭] 참여확인 클릭 (브라우저 호출시각 확인 불가, 처리 {exec_ms}ms)")
+    if disp_dt is None:
+        log(f"[클릭] 참여확인 클릭 ({path_label}, 클릭 시각 확인 불가, 처리 {exec_ms}ms)")
         return
-    disp_local = datetime.fromtimestamp(float(js_ms) / 1000.0)           # 브라우저(PC) 시계 기준
-    transport_ms = int((disp_local - py_before_local).total_seconds() * 1000)
-    if _naver_clock.Ready:
-        pc_minus_naver = (datetime.now() - _naver_clock.Now).total_seconds()
-        disp = disp_local - timedelta(seconds=pc_minus_naver)           # 네이버 시각으로 환산
-        src2 = "네이버"
-    else:
-        disp, src2 = disp_local, "PC시계"
-    log(f"[클릭] 참여확인 클릭: {src2} {disp.strftime('%H:%M:%S.%f')[:-3]} "
-        f"| 오픈 {target.strftime('%H:%M:%S')} 대비 {(disp - target).total_seconds():+.3f}s "
-        f"| 파이썬→브라우저 전달 {transport_ms}ms")
+    diff = (disp_dt - target).total_seconds()
+    log(f"[클릭] 참여확인 클릭: {src} {disp_dt.strftime('%H:%M:%S.%f')[:-3]} "
+        f"| 오픈 {target.strftime('%H:%M:%S')} 대비 {diff:+.3f}s | {path_label} {extra}")
     log(f"[완료] 참여확인 처리 호출 완료 (+{exec_ms}ms)")
+    _LAST_TIMED_CLICK = {"lead_ms": ctx.get("lead_ms", 0.0), "after_open_s": diff, "path": path_label, "t": time.time()}
 
 
 def click_confirm_modal(driver: webdriver.Chrome) -> bool:
@@ -1483,25 +1755,43 @@ def click_confirm_modal(driver: webdriver.Chrome) -> bool:
     # ── (1) 정각 대기 직후: 확인/저장/로그 없이 바로 한 번에 클릭 ───────────────────────
     #     (모달이 떠 있는지도 같은 스크립트 안에서 확인하므로 별도의 왕복이 필요 없음)
     if ctx is not None and (time.time() - _last_confirm_at) >= 0.2:
-        py_before_local = datetime.now()
         t_click0 = time.time()
-        try:
-            res = driver.execute_script(_CONFIRM_CLICK_JS)
-        except Exception:
-            res = None
-        exec_ms = int((time.time() - t_click0) * 1000)
-        status = res[0] if res else "error"
-        js_ms = res[1] if res and len(res) > 1 else None
+        if ctx.get("inpage"):
+            # 브라우저 안에 예약해 둔 클릭의 결과를 받아옴 (안 눌렸으면 파이썬이 대신 누름)
+            status, t_ms, how = _collect_inpage_result(driver)
+            exec_ms = int((time.time() - t_click0) * 1000)
+            ai = ctx["inpage"]
+            disp_dt = (datetime(1970, 1, 1) + timedelta(milliseconds=(float(t_ms) - ai["offset_ms"]))
+                       if t_ms is not None else None)
+            path_label = "브라우저 내부 예약" if how == "inpage" else "예약 실패 → 파이썬 보조 클릭"
+            extra = f"(브라우저 시계 오차 ±{ai['rtt_ms'] / 2:.1f}ms)"
+        else:
+            na = _precise_now()
+            try:
+                res = driver.execute_script(_CONFIRM_CLICK_JS)
+            except Exception:
+                res = None
+            nb = _precise_now()
+            exec_ms = int((time.time() - t_click0) * 1000)
+            status = res[0] if res else "error"
+            # 명령이 오가는 동안의 중간 시점 ≈ 실제 클릭 시점 (고정밀 타이머 기준이라 윈도우 시계 오차가 없음)
+            disp_dt = na + (nb - na) / 2
+            path_label = "파이썬 직접"
+            extra = f"(측정 오차 ±{(nb - na).total_seconds() * 500:.0f}ms)"
 
         if status == "clicked":
             _last_confirm_at = t_click0
-            _log_timed_click(ctx, js_ms, py_before_local, exec_ms)   # 클릭이 끝난 뒤에 로그 출력
+            _log_timed_click(ctx, disp_dt, path_label, extra, exec_ms)   # 클릭이 끝난 뒤에 로그 출력
             t_hide = time.time()
             while time.time() - t_hide < 2.0:
                 if not is_confirm_modal_showing(driver):
                     log(f"[완료] 참여확인창 닫힘 확인 (+{int((time.time()-t_hide)*1000)}ms)")
-                    return True
+                    break
                 time.sleep(0.03)
+            if ctx.get("warmed"):
+                warm = _read_warm_result(driver)
+                if warm:
+                    log(f"[대기] 연결 예열 결과: {warm}")
             return True
         log(f"[경고] 정각 즉시 클릭 실패(status={status}) → 일반 경로로 다시 시도")
 
