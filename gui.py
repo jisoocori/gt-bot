@@ -302,7 +302,6 @@ class GTApp(tk.Tk):
             ("오픈 임박 기준(초)", "hot_window"),
             ("스크롤 횟수",       "max_scroll"),
             ("JOIN 타임아웃(초)", "join_timeout"),
-            ("예측 샷(초)",      "click_lead"),
         ]
         self._setting_vars = {}
         for col, (lbl, key) in enumerate(labels_vars):
@@ -550,7 +549,6 @@ class GTApp(tk.Tk):
             "hot_window":    str(getattr(logic, "HOT_WINDOW_SEC", 120) if logic else 120),
             "max_scroll":    str(getattr(logic, "MAX_SCROLL", 6) if logic else 6),
             "join_timeout":  "0.35",
-            "click_lead":    "0.0",
         }
         for key, var in self._setting_vars.items():
             var.set(s.get(key, defaults[key]))
