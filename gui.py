@@ -8,7 +8,7 @@ GT 자동 감시 GUI
     python gui.py
 """
 
-GUI_LAST_MODIFIED = "2026-08-13 02:20"  # ⭐ 이 파일 수정할 때마다 갱신
+GUI_LAST_MODIFIED = "2026-10-27 13:45"  # ⭐ 실시간 핑 표시 기능 추가
 
 import os
 import sys
@@ -30,17 +30,12 @@ _LOGIC_FILE = resource_path("sum_260609.py")
 
 
 # ── GitHub 자동 업데이트 ─────────────────────────────────────────────────
-# ⭐ 창이 뜨는 걸 절대 막지 않도록, 이 체크는 항상 백그라운드 스레드에서만 돈다.
-#    (강제 재시작 없음 — 새 버전 받으면 로그에 안내만 하고, 다음 실행부터 반영됨)
 GITHUB_OWNER  = "jisoocori"
 GITHUB_REPO   = "gt-bot"
 GITHUB_BRANCH = "main"
-AUTO_UPDATE_ENABLED = True   # 자동 업데이트를 끄고 싶으면 False로 바꾸세요
+AUTO_UPDATE_ENABLED = False   # 덮어쓰기 방지를 위해 꺼둠
 
 def _check_updates_in_background(on_result=None):
-    """GitHub에서 최신 gui.py / sum_260609.py를 받아와 로컬과 다르면 덮어씀.
-       네트워크 문제가 있어도 앱 실행 자체는 절대 막지 않음(백그라운드 스레드 + 짧은 타임아웃).
-       gui.py 자신을 강제로 재시작하지 않음 — 다음 실행부터 반영."""
     if not AUTO_UPDATE_ENABLED:
         return
 
@@ -48,7 +43,6 @@ def _check_updates_in_background(on_result=None):
         import urllib.request
 
         def _norm(b: bytes) -> bytes:
-            # 줄바꿈 차이(\r\n vs \n)만으로는 "다르다"고 판단하지 않도록 정규화
             return b.replace(b"\r\n", b"\n")
 
         base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -131,7 +125,6 @@ def _load_settings() -> dict:
 # ── csq 파일 읽기/쓰기 (쉼표 구분 ↔ 줄바꿈 변환) ───────────────────────────
 
 def _csq_file_to_text(path: str) -> str:
-    """txt 파일(쉼표 구분) → 텍스트위젯용 줄바꿈 문자열"""
     if not path or not os.path.exists(path):
         return ""
     try:
@@ -145,12 +138,10 @@ def _csq_file_to_text(path: str) -> str:
 
 
 def _text_to_csq_set(text: str) -> set:
-    """텍스트위젯 내용 → set"""
     return set(x.strip() for x in text.splitlines() if x.strip())
 
 
 def _text_to_csq_list_ordered(text: str) -> list:
-    """텍스트위젯 내용 → 입력 순서를 보존한 list (중복 제거, 첫 등장 순서 유지)"""
     seen = set()
     out = []
     for line in text.splitlines():
@@ -162,7 +153,6 @@ def _text_to_csq_list_ordered(text: str) -> list:
 
 
 def _write_csq_file(path: str, text: str):
-    """텍스트위젯 내용 → txt 파일(쉼표 구분)으로 저장"""
     if not path:
         return
     items = [x.strip() for x in text.splitlines() if x.strip()]
@@ -192,10 +182,10 @@ class GTApp(tk.Tk):
         self._thread    = None
         self._failed_once: set = set()   # 이번실행 csq (로직과 공유)
         self._stop_event = threading.Event()
-        self._prev_site     = "gt"   # 사이트별 계정 저장용: 직전 사이트 키
-        self._initializing  = True   # 복원 중엔 사이트 변경 감지 비활성
-        self._acct_list     = []     # 현재 사이트 계정 목록 [(email, pw), ...]
-        self._results_win_txt = None  # "결과 모아보기" 창이 열려있으면 그 Text 위젯 참조
+        self._prev_site     = "gt"   
+        self._initializing  = True   
+        self._acct_list     = []     
+        self._results_win_txt = None  
 
         # 설정 로드
         self._settings = _load_settings()
@@ -209,7 +199,6 @@ class GTApp(tk.Tk):
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
-        # ⭐ 창이 다 뜬 뒤에 백그라운드로 업데이트 확인 (네트워크 문제로 창 뜨는 게 막히지 않도록)
         self.after(300, lambda: _check_updates_in_background(self._on_update_check_done))
 
     def _on_update_check_done(self, updated_files):
@@ -251,7 +240,7 @@ class GTApp(tk.Tk):
         fr_login.columnconfigure(3, weight=1)
         fr_login.columnconfigure(5, weight=1)
 
-        # 예약 시작 (로그인 영역 오른쪽에 배치해 공간 절약)
+        # 예약 시작
         tk.Label(fr_login, text="예약시작(MM/DD HH:MM:SS)").grid(row=0, column=6, sticky="w", padx=(20, 2))
         self.var_sched_time = tk.StringVar(value=self._settings.get("sched_time", ""))
         self.ent_sched = tk.Entry(fr_login, textvariable=self.var_sched_time, width=16)
@@ -259,7 +248,7 @@ class GTApp(tk.Tk):
         self.btn_sched = tk.Button(fr_login, text="예약", width=6, command=self._toggle_schedule)
         self.btn_sched.grid(row=0, column=8, sticky="w", padx=3)
 
-        # 예약 종료 (예약 시작 바로 아래, 같은 컬럼으로 정렬)
+        # 예약 종료
         tk.Label(fr_login, text="예약종료(MM/DD HH:MM:SS)").grid(row=1, column=6, sticky="w", padx=(20, 2), pady=(4,0))
         self.var_stop_sched_time = tk.StringVar(value=self._settings.get("stop_sched_time", ""))
         self.ent_stop_sched = tk.Entry(fr_login, textvariable=self.var_stop_sched_time, width=16)
@@ -328,7 +317,6 @@ class GTApp(tk.Tk):
             side=tk.LEFT, padx=(8, 0))
 
 
-
         # ── 3행: 버튼 + 상태 ─────────────────────────────────────────────────
         fr_btn = tk.Frame(self)
         fr_btn.pack(fill=tk.X, **PAD)
@@ -340,7 +328,6 @@ class GTApp(tk.Tk):
         self.btn_stop   = tk.Button(fr_btn, text="종료",        command=self._stop,   **btn_cfg, state=tk.DISABLED)
         self.btn_clrlog = tk.Button(fr_btn, text="로그 지우기", command=self._clear_log, **btn_cfg)
         self.btn_reset  = tk.Button(fr_btn, text="저장값 초기화", command=self._reset_storage, width=10)
-
         self.btn_export = tk.Button(fr_btn, text="로그 저장", command=self._export_log, width=8)
         self.btn_results = tk.Button(fr_btn, text="결과 모아보기", command=self._show_results_only, width=10, fg="darkgreen")
 
@@ -351,28 +338,32 @@ class GTApp(tk.Tk):
         self.lbl_status = tk.Label(fr_btn, text="상태: 대기중", fg="gray")
         self.lbl_status.pack(side=tk.LEFT, padx=12)
 
+        # ⭐ 핑(Ping) 표시 라벨 (우측에 배치)
+        self.lbl_ping = tk.Label(fr_btn, text="서버 핑: 측정 대기", fg="#d32f2f", font=("Consolas", 10, "bold"))
+        self.lbl_ping.pack(side=tk.RIGHT, padx=12)
+
         self._sched_armed  = False
-        self._sched_target = None  # datetime
+        self._sched_target = None  
         self._stop_sched_armed  = False
-        self._stop_sched_target = None  # datetime
+        self._stop_sched_target = None  
 
         # ── 4행: 로그 + csq 패널 ─────────────────────────────────────────────
         fr_panels = tk.Frame(self)
         fr_panels.pack(fill=tk.BOTH, expand=True, **PAD)
 
-        # 실시간 로그 (왼쪽, 넓게)
+        # 실시간 로그
         fr_log = tk.LabelFrame(fr_panels, text="실시간 로그")
         fr_log.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0,4))
         self.txt_log = scrolledtext.ScrolledText(fr_log, state=tk.DISABLED,
                                                   font=("Consolas", 9), wrap=tk.WORD)
         self.txt_log.pack(fill=tk.BOTH, expand=True)
-        self._log_auto_scroll = True  # 자동 스크롤 여부
+        self._log_auto_scroll = True  
         self.txt_log.bind("<MouseWheel>", self._on_log_scroll)
-        self.txt_log.bind("<Button-4>",   self._on_log_scroll)  # Linux 스크롤 업
-        self.txt_log.bind("<Button-5>",   self._on_log_scroll)  # Linux 스크롤 다운
+        self.txt_log.bind("<Button-4>",   self._on_log_scroll)  
+        self.txt_log.bind("<Button-5>",   self._on_log_scroll)  
         self.txt_log.vbar.bind("<ButtonRelease-1>", self._on_log_scrollbar_release)
 
-        # 영구저장 csq (가운데)
+        # 영구저장 csq
         fr_perm = tk.LabelFrame(fr_panels, text="영구저장 csq")
         fr_perm.pack(side=tk.LEFT, fill=tk.BOTH, expand=False, padx=4, ipadx=4)
         fr_perm.configure(width=160)
@@ -384,7 +375,7 @@ class GTApp(tk.Tk):
         tk.Button(fr_perm, text="초기화", fg="darkred",
                   command=self._clear_perm).pack(fill=tk.X, padx=2, pady=2)
 
-        # 🎯 타겟/우선 CSQ 패널 (오른쪽)
+        # 🎯 타겟 CSQ
         fr_target = tk.LabelFrame(fr_panels, text="🎯 타겟 CSQ", fg="blue")
         fr_target.pack(side=tk.LEFT, fill=tk.BOTH, expand=False, padx=(4,0), ipadx=4)
         fr_target.configure(width=160)
@@ -400,10 +391,10 @@ class GTApp(tk.Tk):
                   command=lambda: (self.txt_target.delete("1.0", tk.END), self._refresh_target_info_panel())
                   ).pack(fill=tk.X, padx=2, pady=2)
 
-        # 🎯 타겟 정보 (오픈시간/상품명, 스캔에서 발견되는 대로 자동 채워짐)
+        # 🎯 타겟 정보
         fr_target_info = tk.LabelFrame(fr_panels, text="타겟 정보(오픈시간·상품명)", fg="blue", width=300)
         fr_target_info.pack(side=tk.LEFT, fill=tk.BOTH, expand=False, padx=(4,0), ipadx=4)
-        fr_target_info.pack_propagate(False)  # 내용과 무관하게 위에서 지정한 폭(300px) 고정
+        fr_target_info.pack_propagate(False)  
         self.txt_target_info = scrolledtext.ScrolledText(fr_target_info, width=44,
                                                            font=("맑은 고딕", 10), wrap=tk.WORD,
                                                            bg="#fafafa", state=tk.DISABLED,
@@ -417,17 +408,14 @@ class GTApp(tk.Tk):
         self.txt_target_info.tag_configure("pending", font=("맑은 고딕", 9), foreground="#999999",
                                             spacing3=2)
         self.txt_target_info.tag_configure("sep", foreground="#dddddd")
-        self._target_info = {}  # csq -> {"open": str, "title": str}
+        self._target_info = {}  
 
     # ── 타겟 정보 패널 ────────────────────────────────────────────────────────
 
     _TARGET_INFO_PATTERNS = [
-        # [타겟] [타겟 발견] 88898 [상품명] (85초 남음, 시작=07/16 15:35:00) → ...
         re.compile(r"\[타겟\] \[타겟 발견\] (\d+)(?: \[(.*?)\])? \(.*?시작=([0-9/: ]+)\)"),
-        # [타겟] 타겟 88898 [상품명] 아직 여유 있음 (...초 남음, 시작=07/16 15:35:00, ...)
         re.compile(r"\[타겟\] 타겟 (\d+)(?: \[(.*?)\])? 아직 여유 있음 \(.*?시작=([0-9/: ]+),"),
     ]
-    # jointime이 지나 "즉시 참여 가능"으로 넘어간 경우 (새 회차 시간이 아직 카드에 반영 안 됐을 수 있음)
     _TARGET_INFO_OPEN_NOW_PATTERN = re.compile(r"\[타겟\] \[타겟 발견\] (\d+) 즉시 참여 가능")
 
     def _parse_target_info(self, msg: str):
@@ -436,7 +424,6 @@ class GTApp(tk.Tk):
             if m:
                 csq, title, open_str = m.group(1), m.group(2) or "", m.group(3).strip()
                 prev = self._target_info.get(csq)
-                # ⭐ 상품명은 한 번 확보되면 계속 유지 — 이후 스캔에서 빈 값으로 들어와도 덮어쓰지 않음
                 if not title and prev and prev.get("title"):
                     title = prev["title"]
                 new_info = {"open": open_str, "title": title}
@@ -477,7 +464,6 @@ class GTApp(tk.Tk):
         self.txt_target_info.config(state=tk.DISABLED)
 
     def _sort_target_by_time(self):
-        """타겟 CSQ 목록을 오픈시간 순으로 정렬 (아직 못 찾은 건 맨 아래, 그 안에서는 기존 순서 유지)"""
         try:
             target_csqs = _text_to_csq_list_ordered(self.txt_target.get("1.0", tk.END))
         except Exception:
@@ -486,7 +472,6 @@ class GTApp(tk.Tk):
             return
 
         def _parse_open_dt(open_str: str):
-            """'MM/DD HH:MM:SS' → datetime (연도는 올해로 가정). 실패하면 None."""
             try:
                 dt = datetime.strptime(open_str, "%m/%d %H:%M:%S")
                 return dt.replace(year=datetime.now().year)
@@ -502,20 +487,15 @@ class GTApp(tk.Tk):
                 open_dt = _parse_open_dt(info["open"])
                 is_past = (open_dt is not None) and (open_dt < now)
                 if is_past:
-                    # 이미 지난 시간 → 맨 아래 쪽 (스캔 미발견보다는 위)
                     return (2, info["open"], idx)
                 if info.get("title"):
-                    # 오픈시간+상품명 둘 다 확인 + 아직 안 지남 → 최우선, 시간순
-                    # "MM/DD HH:MM:SS" 형식은 제로패딩되어 있어 문자열 비교로도 시간순 정렬됨
                     return (0, info["open"], idx)
-                # 오픈시간은 알지만 상품명 미확인 + 아직 안 지남 → 그 다음, 시간순
                 return (1, info["open"], idx)
-            # 아직 스캔에서 아예 발견 안 됨 → 맨 아래, 기존 순서 유지
             return (3, "", idx)
 
         sorted_csqs = [csq for _, csq in sorted(enumerate(target_csqs), key=sort_key)]
         if sorted_csqs == target_csqs:
-            return  # 순서 변화 없으면 굳이 다시 그리지 않음
+            return  
 
         self.txt_target.edit_separator()
         self.txt_target.delete("1.0", tk.END)
@@ -529,7 +509,6 @@ class GTApp(tk.Tk):
         s = self._settings
         saved_site = s.get("site", "gt")
 
-        # 사이트별 이메일/비번 우선 복원 (없으면 공통 키 폴백)
         if s.get("remember_email") == "1":
             self.var_email.set(s.get(f"email_{saved_site}", s.get("email", "")))
             self.var_remember_email.set(True)
@@ -537,7 +516,7 @@ class GTApp(tk.Tk):
             self.var_pw.set(s.get(f"pw_{saved_site}", s.get("pw", "")))
             self.var_remember_pw.set(True)
 
-        self.var_site.set(saved_site)          # ← _on_site_changed 가 여기서 발동될 수 있음
+        self.var_site.set(saved_site)          
         self.var_headless.set(s.get("headless", "1") == "1")
         self.var_log_save.set(s.get("log_save", "0") == "1")
         self.var_biz_only.set(s.get("biz_only", "0") == "1")
@@ -553,22 +532,16 @@ class GTApp(tk.Tk):
         for key, var in self._setting_vars.items():
             var.set(s.get(key, defaults[key]))
 
-        # 영구저장 csq 칸 복원
         if logic:
             perm_path = getattr(logic, "SUCCESS_CSQ_FILE", "success_csq_gt.txt")
             self.txt_perm.insert("1.0", _csq_file_to_text(perm_path))
 
-        # 🎯 타겟 CSQ 패널은 사이트별로 _on_site_changed()에서 로딩됨
-
-        # 복원 완료 → 이후 사이트 변경은 계정 저장/로드 활성화
         self._prev_site    = saved_site
         self._initializing = False
-
-        # 계정 드롭다운 초기화
         self._refresh_account_menu()
 
     def _collect_settings(self) -> dict:
-        s = _load_settings()   # 기존 저장값 로드 (다른 사이트 계정 보존)
+        s = _load_settings()   
 
         site = self.var_site.get()
         s["remember_email"] = "1" if self.var_remember_email.get() else "0"
@@ -580,13 +553,11 @@ class GTApp(tk.Tk):
         s["sched_time"]      = self.var_sched_time.get().strip()
         s["stop_sched_time"] = self.var_stop_sched_time.get().strip()
 
-        # 사이트별 이메일/비번 저장
         if self.var_remember_email.get():
             s[f"email_{site}"] = self.var_email.get()
         if self.var_remember_pw.get():
             s[f"pw_{site}"] = self.var_pw.get()
 
-        # 🎯 타겟 CSQ 패널 저장 (사이트별, 콤마 구분)
         target_items = list(_text_to_csq_set(self.txt_target.get("1.0", tk.END)))
         s[f"target_csq_{site}"] = ",".join(target_items)
 
@@ -595,7 +566,6 @@ class GTApp(tk.Tk):
         return s
 
     def _apply_logic_settings(self):
-        """GUI 입력값 → 로직 모듈 상수에 반영"""
         if not logic:
             return
         try:
@@ -606,8 +576,7 @@ class GTApp(tk.Tk):
             logic.MAX_SCROLL            = int(self._setting_vars["max_scroll"].get())
             logic.HEADLESS              = self.var_headless.get()
             logic.LOG_SAVE              = self.var_log_save.get()
-
-            # 🎯 타겟 CSQ 패널 → 로직 모듈 실시간 반영 (콤마 구분)
+            
             target_items = list(_text_to_csq_set(self.txt_target.get("1.0", tk.END)))
             logic.TARGET_CSQ = ",".join(target_items)
         except (ValueError, AttributeError) as e:
@@ -617,29 +586,22 @@ class GTApp(tk.Tk):
     # ── 로그 출력 ─────────────────────────────────────────────────────────────
 
     def _gui_log(self, msg: str):
-        """로직 모듈의 log() 를 대체 — 스레드 안전"""
         import gt_logic as _l
         line = f"[{_l.ts_ms()}]{_l.site_log_tag()} / {msg}\n"
-        # 파일 로그는 그대로 유지
         _l._append_loop_log_line(line.rstrip())
-        # 🎯 타겟 오픈시간/상품명 파싱 (표시 필터와 무관하게 항상 체크)
+        
         if msg.startswith("[타겟]"):
             self._parse_target_info(msg)
-        # 🎯 스캔 한 바퀴 끝날 때마다 타겟 CSQ를 오픈시간 순으로 정렬 (모르는 건 아래로)
         if msg.startswith("[완료] scan 종료"):
             self.after(0, self._sort_target_by_time)
-        # 📋 "결과 모아보기" 창이 열려있으면 [결과] 로그를 실시간으로도 추가
         if "[결과]" in msg and self._results_win_txt is not None:
             self.after(0, self._append_result_line, line)
-        # 스킵 로그: 필터만 적용 (축약은 로직에서 이미 처리됨)
         if msg.startswith("[스킵]"):
             if not self.var_show_skip.get():
                 return
-        # 간략히 보기: [진행] 태그 로그 숨김
         if msg.startswith("[진행]"):
             if self.var_brief.get():
                 return
-        # [완료]만 보기: 켜져 있으면 [완료] 태그가 아닌 로그는 전부 숨김 (다른 필터보다 우선 적용)
         if self.var_only_done.get() and not msg.startswith("[완료]"):
             return
         self.after(0, self._append_log, line)
@@ -679,10 +641,9 @@ class GTApp(tk.Tk):
             self._results_win_txt.insert(tk.END, line)
             self._results_win_txt.see(tk.END)
         except tk.TclError:
-            self._results_win_txt = None  # 창이 이미 닫혔으면 참조 정리
+            self._results_win_txt = None  
 
     def _show_results_only(self):
-        """지금까지 쌓인 전체 로그에서 [결과] 줄만 뽑아서 별도 창에 모아 보여줌 (창을 열어두면 이후 결과도 실시간 추가)"""
         win = tk.Toplevel(self)
         win.title("참여 결과 모음")
         win.geometry("900x500")
@@ -725,6 +686,15 @@ class GTApp(tk.Tk):
         except Exception as e:
             messagebox.showerror("저장 실패", str(e))
 
+    # ⭐ 로직 모듈에서 핑 결과를 전달받을 콜백 함수 추가
+    def _set_ping(self, ping_ms: float):
+        # 핑 수치에 따라 색상 변경 (초록: 매우 빠름, 주황: 보통, 빨강: 지연)
+        color = "#1565c0"  # 기본 파란색
+        if ping_ms < 30: color = "#2e7d32"
+        elif ping_ms > 80: color = "#d32f2f"
+        
+        self.lbl_ping.config(text=f"서버 핑: {ping_ms:.1f} ms", fg=color)
+
     # ── 루프마다 csq 동기화 ───────────────────────────────────────────────────
 
     def _sync_csq_on_loop(self):
@@ -733,7 +703,6 @@ class GTApp(tk.Tk):
         self._apply_logic_settings()
         self._refresh_perm_panel()
 
-        # 🎯 타겟 CSQ 패널 → 로직 모듈 루프마다 동기화
         target_items = list(_text_to_csq_set(self.txt_target.get("1.0", tk.END)))
         logic.TARGET_CSQ = ",".join(target_items)
 
@@ -756,7 +725,6 @@ class GTApp(tk.Tk):
         _write_csq_file(perm_path, self.txt_perm.get("1.0", tk.END))
 
     def _clear_perm(self):
-        """영구저장 csq 초기화 (파일도 비움)"""
         if not messagebox.askyesno("초기화 확인", "영구저장 CSQ를 모두 지우시겠습니까?\n(파일도 함께 초기화됩니다)"):
             return
         self.txt_perm.delete("1.0", tk.END)
@@ -767,7 +735,6 @@ class GTApp(tk.Tk):
     # ── 계정 관리 ─────────────────────────────────────────────────────────────
 
     def _load_accounts(self, site: str) -> list:
-        """settings 에서 사이트별 계정 목록 로드 → [(email, pw), ...]"""
         s = _load_settings()
         result = []
         i = 0
@@ -782,19 +749,15 @@ class GTApp(tk.Tk):
         return result
 
     def _save_accounts(self, site: str, accounts: list):
-        """계정 목록 → settings 에 저장"""
         s = _load_settings()
-        # 기존 항목 삭제
         keys_to_del = [k for k in s if k.startswith(f"acct_{site}_")]
         for k in keys_to_del:
             del s[k]
-        # 새 항목 저장
         for i, (email, pw) in enumerate(accounts):
             s[f"acct_{site}_{i}"] = f"{email}::::{pw}"
         _save_settings(s)
 
     def _refresh_account_menu(self):
-        """드롭다운 메뉴를 현재 사이트 계정 목록으로 갱신"""
         site = self.var_site.get()
         self._acct_list = self._load_accounts(site)
         menu = self._acct_menu["menu"]
@@ -808,19 +771,16 @@ class GTApp(tk.Tk):
                     label=email,
                     command=lambda e=email, p=pw: self._on_account_selected(e, p)
                 )
-            # 현재 이메일이 목록에 있으면 그걸 선택, 없으면 첫 번째
             cur_email = self.var_email.get().strip()
             matched = next((e for e, _ in self._acct_list if e == cur_email), None)
             self.var_acct.set(matched if matched else self._acct_list[0][0])
 
     def _on_account_selected(self, email: str, pw: str):
-        """드롭다운에서 계정 선택 시 이메일·비번 자동 입력"""
         self.var_acct.set(email)
         self.var_email.set(email)
         self.var_pw.set(pw)
 
     def _add_account(self):
-        """현재 이메일·비번을 계정 목록에 추가 (이미 있으면 비번 업데이트)"""
         email = self.var_email.get().strip()
         pw    = self.var_pw.get().strip()
         if not email or not pw:
@@ -842,7 +802,6 @@ class GTApp(tk.Tk):
         messagebox.showinfo("완료", f"계정 추가:\n{email}")
 
     def _del_account(self):
-        """선택된 계정을 목록에서 삭제"""
         selected = self.var_acct.get()
         if not selected or selected == "(저장된 계정 없음)":
             messagebox.showwarning("선택 오류", "삭제할 계정을 선택해 주세요.")
@@ -869,36 +828,29 @@ class GTApp(tk.Tk):
         new_site = self.var_site.get()
         settings = _load_settings()
 
-        # 복원 중에는 계정 저장/로드 건너뜀
         if not self._initializing and new_site != self._prev_site:
-            # ── 이전 사이트 계정 저장 ──────────────────────────────
             if self.var_remember_email.get():
                 settings[f"email_{self._prev_site}"] = self.var_email.get()
             if self.var_remember_pw.get():
                 settings[f"pw_{self._prev_site}"]    = self.var_pw.get()
 
-            # ── 이전 사이트 타겟 CSQ 저장 ────────────────────────────
             prev_target_items = list(_text_to_csq_set(self.txt_target.get("1.0", tk.END)))
             settings[f"target_csq_{self._prev_site}"] = ",".join(prev_target_items)
             _save_settings(settings)
 
-            # ── 새 사이트 계정 로드 ────────────────────────────────
             self.var_email.set(settings.get(f"email_{new_site}", ""))
             self.var_pw.set(settings.get(f"pw_{new_site}", ""))
 
             self._prev_site = new_site
 
-        # ── 새 사이트 타겟 CSQ 로드 (없으면 예전 공통 키로 폴백) ──────
         target_saved = settings.get(f"target_csq_{new_site}", settings.get("target_csq", ""))
         self.txt_target.delete("1.0", tk.END)
         if target_saved:
             items = [x.strip() for x in target_saved.split(",") if x.strip()]
             self.txt_target.insert("1.0", "\n".join(items))
-        self._target_info = {}  # 사이트가 바뀌면 이전 사이트의 캐시된 정보는 의미 없으므로 초기화
+        self._target_info = {}  
         self._refresh_target_info_panel()
 
-        # 계정 드롭다운 갱신 (새 사이트 계정 목록으로) — 방금 로드한 최근 이메일을 유지하고,
-        # 그 이메일이 저장된 계정 목록에 있으면 드롭다운도 자동으로 맞춰짐 (_refresh_account_menu 내부 처리)
         self._refresh_account_menu()
 
         try:
@@ -948,11 +900,6 @@ class GTApp(tk.Tk):
         self._tick_schedule()
 
     def _parse_sched_time(self, raw: str):
-        """다양한 포맷을 지원:
-           - 'HH:MM' / 'HH:MM:SS'                → 오늘/내일 (이미 지났으면 내일)
-           - 'MM/DD HH:MM' / 'MM/DD HH:MM:SS'     → 올해/내년 (이미 지났으면 내년)
-           - 'YYYY-MM-DD HH:MM' / 'YYYY-MM-DD HH:MM:SS' → 해당 날짜 그대로
-        """
         raw = raw.strip()
         now = datetime.now()
 
@@ -1039,7 +986,6 @@ class GTApp(tk.Tk):
     def _start(self):
         if self._running:
             return
-        # 수동으로 시작하면 걸려있던 예약은 정리
         if self._sched_armed:
             self._sched_armed  = False
             self._sched_target = None
@@ -1068,7 +1014,9 @@ class GTApp(tk.Tk):
 
         if logic:
             logic.PAUSED.clear()
-            logic.STOP_SIGNAL.clear()  # ⭐ gui의 stop_event와 logic의 STOP_SIGNAL을 연결
+            logic.STOP_SIGNAL.clear()  
+            # ⭐ 로직 모듈에서 핑 측정이 끝나면 GUI 라벨을 업데이트하도록 콜백 연결
+            logic.gui_ping_callback = lambda p: self.after(0, self._set_ping, p)
 
         self.btn_start.config(state=tk.DISABLED)
         self.btn_pause.config(state=tk.NORMAL)
@@ -1111,7 +1059,7 @@ class GTApp(tk.Tk):
         self._stop_event.set()
         if logic:
             logic.PAUSED.clear()
-            logic.STOP_SIGNAL.set()  # ⭐ 로직 내부 블로킹 대기(wait_until_server_second 등)도 즉시 탈출시킴
+            logic.STOP_SIGNAL.set()  
         self._running = False
         self._paused  = False
         self.btn_start.config(state=tk.NORMAL)
@@ -1143,9 +1091,6 @@ class GTApp(tk.Tk):
         try:
             driver = logic.build_driver(headless=self.var_headless.get())
             logic.login_dbg(driver, email, password)
-            # ⭐ setup_pause_handlers()는 콘솔(msvcrt.getwch()) 전용 기능이라 GUI(pythonw.exe, 콘솔 없음)에서는
-            #    호출하지 않음 — 호출 시 스레드가 제대로 블로킹되지 않고 CPU를 계속 사용하는 문제가 있었음.
-            #    GUI에는 이미 일시정지/재개/종료 버튼이 logic.PAUSED / logic.STOP_SIGNAL에 연결되어 있음.
 
             loop_no = 0
             while not self._stop_event.is_set():
@@ -1264,7 +1209,6 @@ class GTApp(tk.Tk):
             self.after(0, self._stop)
 
     def _force_kill_driver_processes(self, driver):
-        """driver.quit()이 뭔가 남겼을 경우를 대비해 남은 chromedriver/chrome 프로세스를 강제 정리"""
         pid = None
         try:
             pid = driver.service.process.pid
@@ -1287,7 +1231,6 @@ class GTApp(tk.Tk):
             except psutil.NoSuchProcess:
                 pass
         except ImportError:
-            # psutil이 없으면 OS 명령으로 프로세스 트리 강제 종료 시도
             try:
                 import subprocess, platform
                 if platform.system() == "Windows":
