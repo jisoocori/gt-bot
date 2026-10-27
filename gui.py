@@ -8,7 +8,7 @@ GT 자동 감시 GUI
     python gui.py
 """
 
-GUI_LAST_MODIFIED = "2026-10-27 10:00"  # ⭐ 이 파일 수정할 때마다 갱신
+GUI_LAST_MODIFIED = "2026-08-13 02:20"  # ⭐ 이 파일 수정할 때마다 갱신
 
 import os
 import sys
@@ -302,6 +302,7 @@ class GTApp(tk.Tk):
             ("오픈 임박 기준(초)", "hot_window"),
             ("스크롤 횟수",       "max_scroll"),
             ("JOIN 타임아웃(초)", "join_timeout"),
+            ("예측 샷(초)",      "click_lead"),
         ]
         self._setting_vars = {}
         for col, (lbl, key) in enumerate(labels_vars):
@@ -311,7 +312,7 @@ class GTApp(tk.Tk):
             self._setting_vars[key] = var
 
         fr_checks = tk.Frame(fr_set)
-        fr_checks.grid(row=1, column=0, columnspan=12, sticky="w")
+        fr_checks.grid(row=1, column=0, columnspan=14, sticky="w")
         tk.Checkbutton(fr_checks, text="업체입금만 신청", variable=self.var_biz_only).pack(
             side=tk.LEFT, padx=(8, 0))
         self.var_log_save = tk.BooleanVar(value=False)
@@ -549,6 +550,7 @@ class GTApp(tk.Tk):
             "hot_window":    str(getattr(logic, "HOT_WINDOW_SEC", 120) if logic else 120),
             "max_scroll":    str(getattr(logic, "MAX_SCROLL", 6) if logic else 6),
             "join_timeout":  "0.35",
+            "click_lead":    "0.0",
         }
         for key, var in self._setting_vars.items():
             var.set(s.get(key, defaults[key]))
@@ -606,6 +608,7 @@ class GTApp(tk.Tk):
             logic.MAX_SCROLL            = int(self._setting_vars["max_scroll"].get())
             logic.HEADLESS              = self.var_headless.get()
             logic.LOG_SAVE              = self.var_log_save.get()
+            logic.CONFIRM_CLICK_LEAD_SEC = float(self._setting_vars["click_lead"].get())
 
             # 🎯 타겟 CSQ 패널 → 로직 모듈 실시간 반영 (콤마 구분)
             target_items = list(_text_to_csq_set(self.txt_target.get("1.0", tk.END)))
