@@ -8,7 +8,7 @@ GT 자동 감시 GUI
     python gui.py
 """
 
-GUI_LAST_MODIFIED = "2026-08-13 02:20"  # ⭐ 이 파일 수정할 때마다 갱신
+GUI_LAST_MODIFIED = "2026-10-27 10:00"  # ⭐ 이 파일 수정할 때마다 갱신
 
 import os
 import sys
