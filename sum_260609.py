@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-LOGIC_LAST_MODIFIED = "2026-10-27"  # ⭐ 이 파일 수정할 때마다 갱신
+LOGIC_LAST_MODIFIED = "2026-10-27 16:40"  # ⭐ 이 파일 수정할 때마다 갱신
 
 import os
 import re
@@ -1447,6 +1447,7 @@ def _naive_epoch_ms(dt: datetime) -> float:
 # 첫 요청은 연결 수립 때문에 느려서 버리고, 나머지의 중앙값을 왕복시간(RTT)으로 본다. 편도 지연 ≈ RTT/2.
 SERVER_PING: Dict = {"ms": None, "t": 0.0, "n": 0, "site": ""}   # GUI가 읽어서 표시
 AUTO_LEAD_GUI = False          # GUI의 '핑 자동 보정' 체크박스 값
+AUTO_CAP_MS_GUI: Optional[float] = None   # GUI의 '핑 보정 상한(ms)' 칸 값. None이면 click_tuning.txt 값 사용
 LEAD_MS_GUI: Optional[float] = None   # GUI의 '클릭 lead(ms)' 칸 값. None이면 click_tuning.txt 값 사용
 _PING_HISTORY: List[float] = []
 _PING_LAST_TRY = 0.0
@@ -1509,7 +1510,8 @@ def _auto_lead_ms(tun: Dict) -> float:
     ms = SERVER_PING.get("ms")
     if ms is None or time.time() - SERVER_PING.get("t", 0) > 180:
         return 0.0
-    return max(0.0, min(float(tun.get("auto_cap_ms", 80.0)), float(ms) / 2.0))
+    cap = float(AUTO_CAP_MS_GUI) if AUTO_CAP_MS_GUI is not None else float(tun.get("auto_cap_ms", 80.0))
+    return max(0.0, min(max(0.0, cap), float(ms) / 2.0))
 
 
 # ── 연결 예열: 정각 2~3초 전에 같은 사이트로 작은 요청 2번 (결과는 클릭 뒤에 읽음 → 대기를 막지 않음) ──
