@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-LOGIC_LAST_MODIFIED = "2026-10-26"  # ⭐ 이 파일 수정할 때마다 갱신
+LOGIC_LAST_MODIFIED = "2026-10-27"  # ⭐ 이 파일 수정할 때마다 갱신
 
 import os
 import re
@@ -1381,16 +1381,22 @@ _TUNING_DEFAULT_TEXT = """# 정각 클릭 튜닝 — 메모장으로 고치고 �
 # inpage  : 1 = 브라우저 안에서 정각에 직접 클릭 (파이썬→브라우저 전달 지연이 없어짐. 실전 검증 전)
 #           0 = 파이썬이 정각에 클릭 명령을 보냄 (기존 방식, 검증됨)
 # warmup  : 1 = 정각 2~3초 전에 사이트와의 연결을 한 번 확인해 둠 (연결이 식어서 첫 요청이 느려지는 것 방지)
+# auto_lead : 1 = 측정한 서버 핑(왕복)의 절반(편도 지연)만큼 자동으로 더 일찍 클릭. 최종 lead = lead_ms + 핑/2
+#             (GUI의 '핑 자동 보정' 체크와 둘 중 하나만 켜져 있어도 적용됩니다)
+# auto_lead_cap_ms : 핑 보정으로 더해질 수 있는 최대값(ms). 핑이 튀어도 너무 일찍 누르지 않도록 하는 안전장치
 lead_ms = 0
 inpage = 0
 warmup = 1
+auto_lead = 0
+auto_lead_cap_ms = 80
 """
 _LAST_TIMED_CLICK: Optional[Dict] = None   # 마지막 정각 클릭 기록 ([튜닝] 요약 줄용, 1회용)
 
 
 def _read_tuning() -> Dict:
     """click_tuning.txt를 읽어 {lead_ms, inpage, warmup, warn} 반환. 없으면 기본값으로 파일을 만들어 둠."""
-    cfg = {"lead_ms": float(CONFIRM_CLICK_LEAD_SEC) * 1000.0, "inpage": False, "warmup": True, "warn": ""}
+    cfg = {"lead_ms": float(CONFIRM_CLICK_LEAD_SEC) * 1000.0, "inpage": False, "warmup": True, "warn": "",
+           "auto_lead": False, "auto_cap_ms": 80.0}
     try:
         if not os.path.exists(_TUNING_FILE):
             try:
@@ -1421,6 +1427,10 @@ def _read_tuning() -> Dict:
                 cfg["inpage"] = val in ("1", "true", "on", "yes")
             elif key == "warmup":
                 cfg["warmup"] = val in ("1", "true", "on", "yes")
+            elif key == "auto_lead":
+                cfg["auto_lead"] = val in ("1", "true", "on", "yes")
+            elif key == "auto_lead_cap_ms":
+                cfg["auto_cap_ms"] = max(0.0, min(300.0, float(val)))
         except ValueError:
             cfg["warn"] += f"'{raw.strip()}' 줄을 읽지 못해 무시함. "
     return cfg
@@ -1428,6 +1438,75 @@ def _read_tuning() -> Dict:
 
 def _naive_epoch_ms(dt: datetime) -> float:
     return (dt - datetime(1970, 1, 1)).total_seconds() * 1000.0
+
+
+# ── 서버 핑(브라우저→사이트 왕복) 측정 ─────────────────────────────────────────
+# 실제 클릭이 지나가는 길(브라우저→사이트, 연결 재사용)과 같은 방식으로 재기 위해 브라우저 안에서 HEAD 요청을 쓴다.
+# 첫 요청은 연결 수립 때문에 느려서 버리고, 나머지의 중앙값을 왕복시간(RTT)으로 본다. 편도 지연 ≈ RTT/2.
+SERVER_PING: Dict = {"ms": None, "t": 0.0, "n": 0, "site": ""}   # GUI가 읽어서 표시
+AUTO_LEAD_GUI = False          # GUI의 '핑 자동 보정' 체크박스 값
+_PING_HISTORY: List[float] = []
+_PING_LAST_TRY = 0.0
+_PING_JS = r"""
+const done = arguments[arguments.length - 1];
+(async () => {
+    const out = [];
+    for (let i = 0; i < 6; i++) {
+        const ac = new AbortController();
+        const to = setTimeout(() => ac.abort(), 1200);
+        const t0 = performance.now();
+        try {
+            await fetch(location.origin + '/', {method: 'HEAD', cache: 'no-store',
+                                                credentials: 'same-origin', signal: ac.signal});
+            clearTimeout(to);
+            out.push(performance.now() - t0);
+        } catch (e) { clearTimeout(to); }
+    }
+    done(out);
+})();
+"""
+
+
+def update_server_ping(driver, min_interval: float = 8.0) -> Optional[float]:
+    """서버 핑(왕복 ms)을 재서 SERVER_PING에 기록. 실패해도 예외를 내지 않음. 너무 자주 재지 않도록 간격 제한."""
+    global _PING_LAST_TRY
+    now = time.perf_counter()
+    if driver is None or (now - _PING_LAST_TRY) < min_interval:
+        return SERVER_PING.get("ms")
+    _PING_LAST_TRY = now
+    try:
+        if "shopreview" not in (driver.current_url or ""):
+            return SERVER_PING.get("ms")
+        try:
+            driver.set_script_timeout(8)
+        except Exception:
+            pass
+        vals = driver.execute_async_script(_PING_JS)
+        vals = [float(v) for v in (vals or [])]
+        if len(vals) >= 3:
+            vals = vals[1:]                       # 첫 요청(연결 수립)은 제외
+        if not vals:
+            return SERVER_PING.get("ms")
+        vals.sort()
+        med = vals[len(vals) // 2]
+        _PING_HISTORY.append(med)
+        del _PING_HISTORY[:-5]
+        smooth = sorted(_PING_HISTORY)[len(_PING_HISTORY) // 2]   # 최근 5회 중앙값 → 한 번 튄 값에 흔들리지 않게
+        SERVER_PING.update({"ms": round(smooth, 1), "t": time.time(), "n": len(_PING_HISTORY),
+                            "site": ACTIVE_SITE_KEY})
+        return SERVER_PING["ms"]
+    except Exception:
+        return SERVER_PING.get("ms")
+
+
+def _auto_lead_ms(tun: Dict) -> float:
+    """핑 자동 보정으로 더할 ms (꺼져 있거나 핑을 아직 못 쟀으면 0)."""
+    if not (tun.get("auto_lead") or AUTO_LEAD_GUI):
+        return 0.0
+    ms = SERVER_PING.get("ms")
+    if ms is None or time.time() - SERVER_PING.get("t", 0) > 180:
+        return 0.0
+    return max(0.0, min(float(tun.get("auto_cap_ms", 80.0)), float(ms) / 2.0))
 
 
 # ── 연결 예열: 정각 2~3초 전에 같은 사이트로 작은 요청 2번 (결과는 클릭 뒤에 읽음 → 대기를 막지 않음) ──
@@ -1637,7 +1716,9 @@ def _log_tuning_summary(msg: str) -> None:
         label = "마감"
     else:
         label = "기타"
-    log(f"[튜닝] lead {rec['lead_ms']:g}ms | 클릭 오픈대비 {rec['after_open_s']:+.3f}s ({rec['path']}) | 결과: {label}")
+    _pg = rec.get("ping_ms")
+    log(f"[튜닝] lead {rec['lead_ms']:g}ms (핑보정 {rec.get('auto_ms', 0.0):.0f}ms, 서버 핑 "
+        f"{'%.0fms' % _pg if _pg is not None else '미측정'}) | 클릭 오픈대비 {rec['after_open_s']:+.3f}s ({rec['path']}) | 결과: {label}")
 
 
 def wait_until_server_second(driver: webdriver.Chrome, session: requests.Session, url: str, target_open_dt_local: datetime) -> bool:
@@ -1653,14 +1734,17 @@ def wait_until_server_second(driver: webdriver.Chrome, session: requests.Session
     """
     global _CLICK_TIMING_CTX
     tun = _read_tuning()
-    lead = tun["lead_ms"] / 1000.0
     note = ""
+    auto_ms = _auto_lead_ms(tun)
+    lead = (tun["lead_ms"] + auto_ms) / 1000.0
 
     remain0 = (target_open_dt_local - _precise_now()).total_seconds()
     if remain0 > 1.5:
         if tun["warn"]:
             log(f"[경고] click_tuning.txt: {tun['warn']}")
-        log(f"[설정] 클릭 lead {tun['lead_ms']:g}ms | 브라우저 내부 예약 {'켜짐' if tun['inpage'] else '꺼짐'} "
+        _ap = SERVER_PING.get("ms")
+        log(f"[설정] 클릭 lead {tun['lead_ms']:g}ms + 핑보정 {auto_ms:.0f}ms | 서버 핑 "
+            f"{'%.0fms' % _ap if _ap is not None else '미측정'} | 브라우저 내부 예약 {'켜짐' if tun['inpage'] else '꺼짐'} "
             f"| 연결 예열 {'켜짐' if tun['warmup'] else '꺼짐'}  (click_tuning.txt)")
 
     last_sync_try = time.perf_counter()
@@ -1681,6 +1765,13 @@ def wait_until_server_second(driver: webdriver.Chrome, session: requests.Session
             remain = (target_open_dt_local - _precise_now()).total_seconds() - lead
             if remain <= 0:
                 break
+
+            # 정각 4초 전까지는 주기적으로 핑을 다시 재서 보정값 갱신 (측정에 ~0.1초 걸리므로 가까워지면 중단)
+            if driver is not None and remain > 4.0 and (time.perf_counter() - _PING_LAST_TRY) >= 8.0:
+                update_server_ping(driver)
+                auto_ms = _auto_lead_ms(tun)
+                lead = (tun["lead_ms"] + auto_ms) / 1000.0
+                continue
 
             if remain > 12.0 and (time.perf_counter() - last_sync_try) >= 60.0:
                 last_sync_try = time.perf_counter()
@@ -1718,7 +1809,9 @@ def wait_until_server_second(driver: webdriver.Chrome, session: requests.Session
         "reached_dt": _precise_now(),
         "reached_precise": _naver_clock.Ready,
         "lead": lead,
-        "lead_ms": tun["lead_ms"],
+        "lead_ms": tun["lead_ms"] + auto_ms,
+        "auto_ms": auto_ms,
+        "ping_ms": SERVER_PING.get("ms"),
         "note": note,
         "inpage": arm_info,
         "warmed": warmed,
@@ -1743,7 +1836,8 @@ def _log_timed_click(ctx: Dict, disp_dt: Optional[datetime], path_label: str, ex
     log(f"[클릭] 참여확인 클릭: {src} {disp_dt.strftime('%H:%M:%S.%f')[:-3]} "
         f"| 오픈 {target.strftime('%H:%M:%S')} 대비 {diff:+.3f}s | {path_label} {extra}")
     log(f"[완료] 참여확인 처리 호출 완료 (+{exec_ms}ms)")
-    _LAST_TIMED_CLICK = {"lead_ms": ctx.get("lead_ms", 0.0), "after_open_s": diff, "path": path_label, "t": time.time()}
+    _LAST_TIMED_CLICK = {"lead_ms": ctx.get("lead_ms", 0.0), "after_open_s": diff, "path": path_label, "t": time.time(),
+                         "auto_ms": ctx.get("auto_ms", 0.0), "ping_ms": ctx.get("ping_ms")}
 
 
 def click_confirm_modal(driver: webdriver.Chrome) -> bool:
