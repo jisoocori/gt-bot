@@ -346,6 +346,14 @@ class GTApp(tk.Tk):
         tk.Checkbutton(fr_checks, text="핑 자동 보정 (클릭을 핑/2만큼 일찍)", variable=self.var_auto_lead,
                        command=self._on_auto_lead_changed).pack(side=tk.LEFT, padx=(8, 0))
 
+        # 클릭 lead(ms): +면 오픈보다 일찍, -면 늦게. 비워두면 click_tuning.txt 값을 사용
+        tk.Label(fr_checks, text="클릭 lead(ms)").pack(side=tk.LEFT, padx=(16, 2))
+        self.var_lead_ms = tk.StringVar()
+        tk.Entry(fr_checks, textvariable=self.var_lead_ms, width=6).pack(side=tk.LEFT)
+        self.var_lead_ms.trace_add("write", lambda *_: self._apply_lead_ms())
+        tk.Label(fr_checks, text="(+일찍 / -늦게, 빈칸=파일값)", fg="gray",
+                 font=("맑은 고딕", 8)).pack(side=tk.LEFT, padx=(4, 0))
+
 
 
         # ── 3행: 버튼 + 상태 ─────────────────────────────────────────────────
@@ -560,6 +568,7 @@ class GTApp(tk.Tk):
         self.var_headless.set(s.get("headless", "1") == "1")
         self.var_log_save.set(s.get("log_save", "0") == "1")
         self.var_auto_lead.set(s.get("auto_lead", "0") == "1")
+        self.var_lead_ms.set(s.get("lead_ms", ""))
         if logic:
             logic.AUTO_LEAD_GUI = self.var_auto_lead.get()
         self.var_biz_only.set(s.get("biz_only", "0") == "1")
@@ -599,6 +608,7 @@ class GTApp(tk.Tk):
         s["headless"]       = "1" if self.var_headless.get() else "0"
         s["log_save"]       = "1" if self.var_log_save.get() else "0"
         s["auto_lead"]      = "1" if self.var_auto_lead.get() else "0"
+        s["lead_ms"]        = self.var_lead_ms.get().strip()
         s["biz_only"]       = "1" if self.var_biz_only.get() else "0"
         s["sched_time"]      = self.var_sched_time.get().strip()
         s["stop_sched_time"] = self.var_stop_sched_time.get().strip()
@@ -882,6 +892,16 @@ class GTApp(tk.Tk):
         else:
             self.var_email.set("")
             self.var_pw.set("")
+
+    def _apply_lead_ms(self):
+        """클릭 lead 입력칸 → 로직에 즉시 반영 (빈칸/잘못된 값이면 None = 파일값 사용)"""
+        if not logic:
+            return
+        raw = self.var_lead_ms.get().strip()
+        try:
+            logic.LEAD_MS_GUI = float(raw) if raw else None
+        except ValueError:
+            logic.LEAD_MS_GUI = None
 
     def _on_auto_lead_changed(self):
         if logic:
