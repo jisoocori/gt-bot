@@ -311,7 +311,7 @@ class GTApp(tk.Tk):
             self._setting_vars[key] = var
 
         fr_checks = tk.Frame(fr_set)
-        fr_checks.grid(row=1, column=0, columnspan=14, sticky="w")
+        fr_checks.grid(row=1, column=0, columnspan=12, sticky="w")
         tk.Checkbutton(fr_checks, text="업체입금만 신청", variable=self.var_biz_only).pack(
             side=tk.LEFT, padx=(8, 0))
         self.var_log_save = tk.BooleanVar(value=False)
@@ -606,7 +606,6 @@ class GTApp(tk.Tk):
             logic.MAX_SCROLL            = int(self._setting_vars["max_scroll"].get())
             logic.HEADLESS              = self.var_headless.get()
             logic.LOG_SAVE              = self.var_log_save.get()
-            logic.CONFIRM_CLICK_LEAD_SEC = float(self._setting_vars["click_lead"].get())
 
             # 🎯 타겟 CSQ 패널 → 로직 모듈 실시간 반영 (콤마 구분)
             target_items = list(_text_to_csq_set(self.txt_target.get("1.0", tk.END)))
