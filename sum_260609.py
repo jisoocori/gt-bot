@@ -1433,6 +1433,8 @@ def _read_tuning() -> Dict:
                 cfg["auto_cap_ms"] = max(0.0, min(300.0, float(val)))
         except ValueError:
             cfg["warn"] += f"'{raw.strip()}' 줄을 읽지 못해 무시함. "
+    if LEAD_MS_GUI is not None:                      # GUI 칸에 값이 있으면 파일 값보다 우선
+        cfg["lead_ms"] = max(-100.0, min(500.0, float(LEAD_MS_GUI)))
     return cfg
 
 
@@ -1445,6 +1447,7 @@ def _naive_epoch_ms(dt: datetime) -> float:
 # 첫 요청은 연결 수립 때문에 느려서 버리고, 나머지의 중앙값을 왕복시간(RTT)으로 본다. 편도 지연 ≈ RTT/2.
 SERVER_PING: Dict = {"ms": None, "t": 0.0, "n": 0, "site": ""}   # GUI가 읽어서 표시
 AUTO_LEAD_GUI = False          # GUI의 '핑 자동 보정' 체크박스 값
+LEAD_MS_GUI: Optional[float] = None   # GUI의 '클릭 lead(ms)' 칸 값. None이면 click_tuning.txt 값 사용
 _PING_HISTORY: List[float] = []
 _PING_LAST_TRY = 0.0
 _PING_JS = r"""
