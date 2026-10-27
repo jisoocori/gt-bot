@@ -8,7 +8,7 @@ GT 자동 감시 GUI
     python gui.py
 """
 
-GUI_LAST_MODIFIED = "2026-10-27"  # ⭐ 이 파일 수정할 때마다 갱신
+GUI_LAST_MODIFIED = "2026-10-27 16:40"  # ⭐ 이 파일 수정할 때마다 갱신
 
 import os
 import sys
@@ -195,6 +195,7 @@ class GTApp(tk.Tk):
         logic_build = getattr(logic, "LOGIC_LAST_MODIFIED", "?") if logic else "?"
         self.title(f"GT 자동 감시 GUI - [{folder_name}]  (GUI {GUI_LAST_MODIFIED} / 로직 {logic_build})")
         self.resizable(True, True)
+        self.geometry("1180x700")      # 기본 창 크기 (가로를 줄임)
         self.minsize(900, 640)
 
         # 상태
@@ -314,16 +315,25 @@ class GTApp(tk.Tk):
             ("오픈 임박 기준(초)", "hot_window"),
             ("스크롤 횟수",       "max_scroll"),
             ("JOIN 타임아웃(초)", "join_timeout"),
+            ("클릭 lead(ms) +일찍/-늦게", "lead_ms"),   # 빈칸 = click_tuning.txt 값 사용
+            ("핑 보정 상한(ms)",  "auto_cap_ms"),
+            ("혼잡 재시도 횟수(0=안함)", "retry_max"),
+            ("혼잡 재시도 간격(초)", "retry_delay"),
         ]
         self._setting_vars = {}
-        for col, (lbl, key) in enumerate(labels_vars):
-            tk.Label(fr_set, text=lbl).grid(row=0, column=col*2, sticky="w", padx=(8,2))
+        PER_ROW = 4   # 한 줄에 4개씩 → 창이 가로로 넓어지지 않음
+        for i, (lbl, key) in enumerate(labels_vars):
+            r, c = divmod(i, PER_ROW)
+            tk.Label(fr_set, text=lbl).grid(row=r, column=c*2, sticky="w", padx=(8,2), pady=1)
             var = tk.StringVar()
-            tk.Entry(fr_set, textvariable=var, width=8).grid(row=0, column=col*2+1, sticky="ew", padx=(0,8))
+            tk.Entry(fr_set, textvariable=var, width=8).grid(row=r, column=c*2+1, sticky="w", padx=(0,8), pady=1)
             self._setting_vars[key] = var
+        self.var_lead_ms = self._setting_vars["lead_ms"]          # 아래 로직 반영 함수와 공유
+        self.var_lead_ms.trace_add("write", lambda *_: self._apply_lead_ms())
+        _rows = (len(labels_vars) + PER_ROW - 1) // PER_ROW
 
         fr_checks = tk.Frame(fr_set)
-        fr_checks.grid(row=1, column=0, columnspan=12, sticky="w")
+        fr_checks.grid(row=_rows, column=0, columnspan=PER_ROW*2, sticky="w")
         tk.Checkbutton(fr_checks, text="업체입금만 신청", variable=self.var_biz_only).pack(
             side=tk.LEFT, padx=(8, 0))
         self.var_log_save = tk.BooleanVar(value=False)
@@ -339,20 +349,14 @@ class GTApp(tk.Tk):
         tk.Checkbutton(fr_checks, text="[완료]만 보기", variable=self.var_only_done, fg="darkgreen").pack(
             side=tk.LEFT, padx=(8, 0))
 
-        # 서버 핑 표시 + 핑 자동 보정 (왕복시간의 절반만큼 클릭을 더 일찍)
+        # 서버 핑 표시 + 핑 자동 보정 (왕복시간의 절반만큼 클릭을 더 일찍) — 체크박스 줄 아래에 따로 배치
+        fr_ping = tk.Frame(fr_set)
+        fr_ping.grid(row=_rows + 1, column=0, columnspan=PER_ROW*2, sticky="w")
         self.var_auto_lead = tk.BooleanVar(value=False)
-        self.lbl_ping = tk.Label(fr_checks, text="서버 핑: 측정 대기", fg="red", font=("맑은 고딕", 9, "bold"))
-        self.lbl_ping.pack(side=tk.LEFT, padx=(16, 0))
-        tk.Checkbutton(fr_checks, text="핑 자동 보정 (클릭을 핑/2만큼 일찍)", variable=self.var_auto_lead,
-                       command=self._on_auto_lead_changed).pack(side=tk.LEFT, padx=(8, 0))
-
-        # 클릭 lead(ms): +면 오픈보다 일찍, -면 늦게. 비워두면 click_tuning.txt 값을 사용
-        tk.Label(fr_checks, text="클릭 lead(ms)").pack(side=tk.LEFT, padx=(16, 2))
-        self.var_lead_ms = tk.StringVar()
-        tk.Entry(fr_checks, textvariable=self.var_lead_ms, width=6).pack(side=tk.LEFT)
-        self.var_lead_ms.trace_add("write", lambda *_: self._apply_lead_ms())
-        tk.Label(fr_checks, text="(+일찍 / -늦게, 빈칸=파일값)", fg="gray",
-                 font=("맑은 고딕", 8)).pack(side=tk.LEFT, padx=(4, 0))
+        self.lbl_ping = tk.Label(fr_ping, text="서버 핑: 측정 대기", fg="red", font=("맑은 고딕", 9, "bold"))
+        self.lbl_ping.pack(side=tk.LEFT, padx=(8, 0))
+        tk.Checkbutton(fr_ping, text="핑 자동 보정 (클릭을 핑/2만큼 일찍)", variable=self.var_auto_lead,
+                       command=self._on_auto_lead_changed).pack(side=tk.LEFT, padx=(12, 0))
 
 
 
@@ -390,7 +394,7 @@ class GTApp(tk.Tk):
         # 실시간 로그 (왼쪽, 넓게)
         fr_log = tk.LabelFrame(fr_panels, text="실시간 로그")
         fr_log.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0,4))
-        self.txt_log = scrolledtext.ScrolledText(fr_log, state=tk.DISABLED,
+        self.txt_log = scrolledtext.ScrolledText(fr_log, state=tk.DISABLED, width=30,   # 기본 폭을 작게 → 남는 공간만 차지(오른쪽 패널이 안 밀림)
                                                   font=("Consolas", 9), wrap=tk.WORD)
         self.txt_log.pack(fill=tk.BOTH, expand=True)
         self._log_auto_scroll = True  # 자동 스크롤 여부
@@ -568,7 +572,6 @@ class GTApp(tk.Tk):
         self.var_headless.set(s.get("headless", "1") == "1")
         self.var_log_save.set(s.get("log_save", "0") == "1")
         self.var_auto_lead.set(s.get("auto_lead", "0") == "1")
-        self.var_lead_ms.set(s.get("lead_ms", ""))
         if logic:
             logic.AUTO_LEAD_GUI = self.var_auto_lead.get()
         self.var_biz_only.set(s.get("biz_only", "0") == "1")
@@ -580,6 +583,10 @@ class GTApp(tk.Tk):
             "hot_window":    str(getattr(logic, "HOT_WINDOW_SEC", 120) if logic else 120),
             "max_scroll":    str(getattr(logic, "MAX_SCROLL", 6) if logic else 6),
             "join_timeout":  "0.45",
+            "lead_ms":       "",
+            "auto_cap_ms":   "80",
+            "retry_max":     str(getattr(logic, "CONGESTION_RETRY_MAX", 5) if logic else 5),
+            "retry_delay":   str(getattr(logic, "CONGESTION_RETRY_DELAY_SEC", 0.3) if logic else 0.3),
         }
         for key, var in self._setting_vars.items():
             var.set(s.get(key, defaults[key]))
@@ -608,7 +615,6 @@ class GTApp(tk.Tk):
         s["headless"]       = "1" if self.var_headless.get() else "0"
         s["log_save"]       = "1" if self.var_log_save.get() else "0"
         s["auto_lead"]      = "1" if self.var_auto_lead.get() else "0"
-        s["lead_ms"]        = self.var_lead_ms.get().strip()
         s["biz_only"]       = "1" if self.var_biz_only.get() else "0"
         s["sched_time"]      = self.var_sched_time.get().strip()
         s["stop_sched_time"] = self.var_stop_sched_time.get().strip()
@@ -640,6 +646,10 @@ class GTApp(tk.Tk):
             logic.HEADLESS              = self.var_headless.get()
             logic.LOG_SAVE              = self.var_log_save.get()
             logic.AUTO_LEAD_GUI         = self.var_auto_lead.get()
+            logic.CONGESTION_RETRY_MAX  = max(0, int(self._setting_vars["retry_max"].get()))
+            logic.CONGESTION_RETRY_DELAY_SEC = max(0.0, float(self._setting_vars["retry_delay"].get()))
+            _cap = self._setting_vars["auto_cap_ms"].get().strip()
+            logic.AUTO_CAP_MS_GUI       = max(0.0, float(_cap)) if _cap else None
 
             # 🎯 타겟 CSQ 패널 → 로직 모듈 실시간 반영 (콤마 구분)
             target_items = list(_text_to_csq_set(self.txt_target.get("1.0", tk.END)))
@@ -919,7 +929,10 @@ class GTApp(tk.Tk):
             else:
                 half = ms / 2.0
                 if self.var_auto_lead.get():
-                    cap = 80.0
+                    try:
+                        cap = float(self._setting_vars["auto_cap_ms"].get())
+                    except ValueError:
+                        cap = 80.0
                     txt = f"서버 핑: {ms:.0f}ms (편도 ≈{half:.0f}ms → {min(half, cap):.0f}ms 일찍 클릭)"
                 else:
                     txt = f"서버 핑: {ms:.0f}ms (편도 ≈{half:.0f}ms, 보정 꺼짐)"
