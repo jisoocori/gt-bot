@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-LOGIC_LAST_MODIFIED = "2026-10-27 16:40"  # ⭐ 이 파일 수정할 때마다 갱신
+LOGIC_LAST_MODIFIED = "2026-11-02 10:45"  # ⭐ 이 파일 수정할 때마다 갱신
 
 import os
 import re
@@ -48,6 +48,17 @@ SITE_CONFIGS = {
         "retry_second_account": True,
         "success_csq_file": "success_csq_dbd.txt",
         "account_fail_csq_file": None,
+    },
+    # flowc: 구조는 gt와 동일. 입금 방식 제한은 dbd처럼 없음(None) — 제한을 두려면 gt처럼 딕셔너리로 바꾸면 됨
+    "flowc": {
+        "site_name": "flowc",
+        "login_url": "https://flowc.shopreview.co.kr/usr/login_form",
+        "list_url": "https://flowc.shopreview.co.kr/usr",
+        "allowed_deposit_modes": None,
+        "persist_account_fail": True,
+        "retry_second_account": True,
+        "success_csq_file": "success_csq_flowc.txt",
+        "account_fail_csq_file": "account_fail_csq_flowc.txt",
     },
 }
 
@@ -157,7 +168,7 @@ def ts_ms() -> str:
     return datetime.now().strftime("%H:%M:%S.%f")[:-3]
 
 def site_log_tag() -> str:
-    return "GT" if ACTIVE_SITE_KEY == "gt" else "DB"
+    return {"gt": "GT", "dbd": "DB", "flowc": "FLOWC"}.get(ACTIVE_SITE_KEY, str(ACTIVE_SITE_KEY).upper())
 
 
 LOOP_LOG_DIR = "loop_logs"
@@ -398,7 +409,7 @@ def detect_deposit_mode(text: str, html: str = "") -> str:
         return "TRUEPULSE"
     if ("업체입금" in blob) or ("type_box_deposit_n" in blob):
         return "VENDOR"
-    if ("굿투입금" in blob) or ("type_box_deposit_y" in blob):
+    if ("굿투입금" in blob) or ("흐름입금" in blob) or ("type_box_deposit_y" in blob):   # flowc는 '흐름입금'으로 표기
         return "GOODTO"
     return "UNKNOWN"
 
