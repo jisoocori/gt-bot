@@ -8,7 +8,7 @@ GT 자동 감시 GUI
     python gui.py
 """
 
-GUI_LAST_MODIFIED = "2026-10-27 16:40"  # ⭐ 이 파일 수정할 때마다 갱신
+GUI_LAST_MODIFIED = "2026-11-02 10:45"  # ⭐ 이 파일 수정할 때마다 갱신
 
 import os
 import sys
@@ -245,7 +245,7 @@ class GTApp(tk.Tk):
         tk.Label(fr_login, text="사이트").grid(row=0, column=0, sticky="w")
         self.var_site = tk.StringVar(value="gt")
         self.var_site.trace_add("write", self._on_site_changed)
-        site_keys = list(logic.SITE_CONFIGS.keys()) if logic else ["gt", "dbd"]
+        site_keys = list(logic.SITE_CONFIGS.keys()) if logic else ["gt", "dbd", "flowc"]
         site_menu = tk.OptionMenu(fr_login, self.var_site, *site_keys)
         site_menu.config(width=6)
         site_menu.grid(row=0, column=1, sticky="w", padx=(4, 20))
