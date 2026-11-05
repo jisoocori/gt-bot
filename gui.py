@@ -8,7 +8,7 @@ GT 자동 감시 GUI
     python gui.py
 """
 
-GUI_LAST_MODIFIED = "2026-11-02 10:45"  # ⭐ 이 파일 수정할 때마다 갱신
+GUI_LAST_MODIFIED = "2026-11-05 13:50"  # ⭐ 이 파일 수정할 때마다 갱신
 
 import os
 import sys
@@ -184,6 +184,80 @@ def _write_csq_file(path: str, text: str):
         pass
 
 
+
+# ── 시각 입력 위젯 (24시간 HH:MM:SS, ▲▼ 버튼/마우스 휠로 10초 단위 조절) ─────────────────────
+_HMS_RE = re.compile(r"(\d{1,2}):(\d{1,2})(?::(\d{1,2}))?")
+
+def _hms_to_secs(raw: str):
+    """문자열에서 시:분[:초]를 찾아 하루 중 초(0~86399)로. 못 찾으면 None. (예전 '10/19 09:57:00' 형식에서도 시각만 뽑음)"""
+    m = _HMS_RE.search(raw or "")
+    if not m:
+        return None
+    h, mi, se = int(m.group(1)), int(m.group(2)), int(m.group(3) or 0)
+    if h > 23 or mi > 59 or se > 59:
+        return None
+    return h * 3600 + mi * 60 + se
+
+def _secs_to_hms(secs: int) -> str:
+    secs %= 86400
+    return f"{secs // 3600:02d}:{secs % 3600 // 60:02d}:{secs % 60:02d}"
+
+def _normalize_hms(raw: str) -> str:
+    s = _hms_to_secs(raw)
+    return _secs_to_hms(s) if s is not None else ""
+
+
+class TimeSpinner(tk.Frame):
+    """[ HH:MM:SS ][▲][▼] — ▲▼는 누르고 있으면 계속 변하고, 마우스 휠도 됩니다. 직접 타이핑해도 됩니다."""
+    STEP = 10   # 초 단위
+
+    def __init__(self, master, textvariable):
+        super().__init__(master)
+        self.var = textvariable
+        self.entry = tk.Entry(self, textvariable=self.var, width=9, justify="center", font=("Consolas", 10))
+        self.entry.pack(side=tk.LEFT)
+        self.btn_up = tk.Button(self, text="▲", width=2, repeatdelay=400, repeatinterval=70,
+                                command=lambda: self._bump(+1))
+        self.btn_dn = tk.Button(self, text="▼", width=2, repeatdelay=400, repeatinterval=70,
+                                command=lambda: self._bump(-1))
+        self.btn_up.pack(side=tk.LEFT, padx=(2, 0))
+        self.btn_dn.pack(side=tk.LEFT, padx=(1, 0))
+        for w in (self.entry,):
+            w.bind("<MouseWheel>", self._on_wheel)
+            w.bind("<Button-4>", lambda e: self._bump(+1))   # Linux
+            w.bind("<Button-5>", lambda e: self._bump(-1))
+            w.bind("<FocusOut>", lambda e: self.normalize())
+            w.bind("<Return>",   lambda e: self.normalize())
+
+    def _on_wheel(self, e):
+        self._bump(+1 if e.delta > 0 else -1)
+        return "break"
+
+    def normalize(self):
+        s = _hms_to_secs(self.var.get())
+        if s is not None:
+            self.var.set(_secs_to_hms(s))
+
+    def _bump(self, direction: int):
+        if str(self.entry.cget("state")) == "disabled":
+            return
+        cur = _hms_to_secs(self.var.get())
+        if cur is None:                       # 비어 있으면 지금 시각에서 시작
+            n = datetime.now()
+            cur = n.hour * 3600 + n.minute * 60 + n.second
+        st = self.STEP
+        new = (cur // st + 1) * st if direction > 0 else (cur // st if cur % st else cur // st - 1) * st
+        self.var.set(_secs_to_hms(new))       # 10초 단위로 맞춰가며 이동, 24시 넘으면 처음으로 돌아감
+
+    def configure(self, cnf=None, **kw):
+        if "state" in kw:
+            st = kw.pop("state")
+            for w in (self.entry, self.btn_up, self.btn_dn):
+                w.config(state=st)
+        if cnf or kw:
+            super().configure(cnf or {}, **kw)
+    config = configure
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  메인 GUI 클래스
 # ══════════════════════════════════════════════════════════════════════════════
@@ -265,19 +339,19 @@ class GTApp(tk.Tk):
         fr_login.columnconfigure(5, weight=1)
 
         # 예약 시작 (로그인 영역 오른쪽에 배치해 공간 절약)
-        tk.Label(fr_login, text="예약시작(MM/DD HH:MM:SS)").grid(row=0, column=6, sticky="w", padx=(20, 2))
-        self.var_sched_time = tk.StringVar(value=self._settings.get("sched_time", ""))
-        self.ent_sched = tk.Entry(fr_login, textvariable=self.var_sched_time, width=16)
+        tk.Label(fr_login, text="예약시작(24시)").grid(row=0, column=6, sticky="w", padx=(20, 2))
+        self.var_sched_time = tk.StringVar(value=_normalize_hms(self._settings.get("sched_time", "")))
+        self.ent_sched = TimeSpinner(fr_login, self.var_sched_time)
         self.ent_sched.grid(row=0, column=7, sticky="w", padx=(0, 3))
-        self.btn_sched = tk.Button(fr_login, text="예약", width=6, command=self._toggle_schedule)
+        self.btn_sched = tk.Button(fr_login, text="예약", width=9, command=self._toggle_schedule)
         self.btn_sched.grid(row=0, column=8, sticky="w", padx=3)
 
         # 예약 종료 (예약 시작 바로 아래, 같은 컬럼으로 정렬)
-        tk.Label(fr_login, text="예약종료(MM/DD HH:MM:SS)").grid(row=1, column=6, sticky="w", padx=(20, 2), pady=(4,0))
-        self.var_stop_sched_time = tk.StringVar(value=self._settings.get("stop_sched_time", ""))
-        self.ent_stop_sched = tk.Entry(fr_login, textvariable=self.var_stop_sched_time, width=16)
+        tk.Label(fr_login, text="예약종료(24시)").grid(row=1, column=6, sticky="w", padx=(20, 2), pady=(4,0))
+        self.var_stop_sched_time = tk.StringVar(value=_normalize_hms(self._settings.get("stop_sched_time", "")))
+        self.ent_stop_sched = TimeSpinner(fr_login, self.var_stop_sched_time)
         self.ent_stop_sched.grid(row=1, column=7, sticky="w", padx=(0, 3), pady=(4,0))
-        self.btn_stop_sched = tk.Button(fr_login, text="예약", width=6, command=self._toggle_stop_schedule)
+        self.btn_stop_sched = tk.Button(fr_login, text="예약", width=9, command=self._toggle_stop_schedule)
         self.btn_stop_sched.grid(row=1, column=8, sticky="w", padx=3, pady=(4,0))
 
         # ── row=1: 계정 드롭다운 ──────────────────────────────────────────────
@@ -616,8 +690,8 @@ class GTApp(tk.Tk):
         s["log_save"]       = "1" if self.var_log_save.get() else "0"
         s["auto_lead"]      = "1" if self.var_auto_lead.get() else "0"
         s["biz_only"]       = "1" if self.var_biz_only.get() else "0"
-        s["sched_time"]      = self.var_sched_time.get().strip()
-        s["stop_sched_time"] = self.var_stop_sched_time.get().strip()
+        s["sched_time"]      = _normalize_hms(self.var_sched_time.get())
+        s["stop_sched_time"] = _normalize_hms(self.var_stop_sched_time.get())
 
         # 사이트별 이메일/비번 저장
         if self.var_remember_email.get():
@@ -1010,15 +1084,14 @@ class GTApp(tk.Tk):
             messagebox.showwarning("예약 불가", "이미 실행 중입니다.")
             return
 
+        self.ent_sched.normalize()
         raw = self.var_sched_time.get().strip()
         target = self._parse_sched_time(raw)
         if target is None:
             messagebox.showwarning(
                 "입력 오류",
-                "시간 형식이 올바르지 않습니다.\n"
-                "예: 10:00:00 (오늘/내일)\n"
-                "    07/25 10:00:00 (날짜 지정)\n"
-                "    2026-07-25 10:00:00 (연도까지 지정)"
+                "시각을 24시간 형식(예: 10:00:00)으로 입력하거나 ▲▼로 맞춰 주세요.\n"
+                "가장 가까운 해당 시각(이미 지났으면 내일)으로 예약됩니다."
             )
             return
 
@@ -1031,7 +1104,7 @@ class GTApp(tk.Tk):
         self._sched_target = target
         self._sched_armed  = True
         self.ent_sched.config(state=tk.DISABLED)
-        self.btn_sched.config(text="예약 취소")
+        self.btn_sched.config(text="취소(내일)" if target.date() > datetime.now().date() else "예약 취소")
         self._tick_schedule()
 
     def _parse_sched_time(self, raw: str):
@@ -1092,22 +1165,21 @@ class GTApp(tk.Tk):
             self.btn_stop_sched.config(text="예약")
             return
 
+        self.ent_stop_sched.normalize()
         raw = self.var_stop_sched_time.get().strip()
         target = self._parse_sched_time(raw)
         if target is None:
             messagebox.showwarning(
                 "입력 오류",
-                "시간 형식이 올바르지 않습니다.\n"
-                "예: 18:00:00 (오늘/내일)\n"
-                "    07/25 18:00:00 (날짜 지정)\n"
-                "    2026-07-25 18:00:00 (연도까지 지정)"
+                "시각을 24시간 형식(예: 18:00:00)으로 입력하거나 ▲▼로 맞춰 주세요.\n"
+                "가장 가까운 해당 시각(이미 지났으면 내일)으로 예약됩니다."
             )
             return
 
         self._stop_sched_target = target
         self._stop_sched_armed  = True
         self.ent_stop_sched.config(state=tk.DISABLED)
-        self.btn_stop_sched.config(text="예약 취소")
+        self.btn_stop_sched.config(text="취소(내일)" if target.date() > datetime.now().date() else "예약 취소")
         self._tick_stop_schedule()
 
     def _tick_stop_schedule(self):
@@ -1155,6 +1227,7 @@ class GTApp(tk.Tk):
 
         if logic:
             logic.PAUSED.clear()
+            logic.TARGET_BLOCKED.clear()   # 새로 시작하면 '횟수 초과'로 막아둔 타겟도 다시 도전
             logic.STOP_SIGNAL.clear()  # ⭐ gui의 stop_event와 logic의 STOP_SIGNAL을 연결
 
         self.btn_start.config(state=tk.DISABLED)
