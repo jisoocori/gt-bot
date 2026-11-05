@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-LOGIC_LAST_MODIFIED = "2026-11-02 10:45"  # ⭐ 이 파일 수정할 때마다 갱신
+LOGIC_LAST_MODIFIED = "2026-11-05 11:20"  # ⭐ 이 파일 수정할 때마다 갱신
 
 import os
 import re
@@ -771,6 +771,22 @@ def wait_for_post_join_event(driver: webdriver.Chrome, timeout: float = 2.0) -> 
 # =========================
 # 결과 알림 처리
 # =========================
+# ⭐ '참여 횟수 초과'처럼 이 계정으로는 더 해봐야 소용없는 타겟은 여기에 기록해 두고,
+#    사이트에 새 회차(미래 오픈시간)가 뜰 때까지 다시 시도하지 않는다. (타겟은 failed_once를 무시하기 때문에 따로 필요)
+TARGET_BLOCKED: set = set()
+
+
+def target_blocked_gate(csq: str, open_dt, secs_to_open) -> bool:
+    """True면 이번 스캔에서 이 타겟을 건너뛴다. 새 회차(미래 오픈시간)가 보이면 차단을 풀고 False."""
+    if csq not in TARGET_BLOCKED:
+        return False
+    if open_dt is not None and secs_to_open is not None and secs_to_open > 0:
+        TARGET_BLOCKED.discard(csq)
+        log(f"[타겟] 새 회차 오픈시간이 확인되어 차단 해제 → 다시 도전: {csq}")
+        return False
+    return True
+
+
 def handle_result_alert(driver: webdriver.Chrome, current_csq: Optional[str], failed_once: set,
                         current_account_index: Optional[int] = None,
                         available_account_count: int = 0,
@@ -800,6 +816,7 @@ def handle_result_alert(driver: webdriver.Chrome, current_csq: Optional[str], fa
     save_current_page_html(driver, f"alert_{current_csq or 'unknown'}")
 
     result = "fail"
+    msg_nospace = re.sub(r"\s+", "", msg)      # 사이트마다 띄어쓰기가 달라서(참여 할 / 참여할) 공백 없이 비교
 
     if "참여하실 계정을 선택해 주세요" in msg:
         result = "none"
@@ -812,7 +829,7 @@ def handle_result_alert(driver: webdriver.Chrome, current_csq: Optional[str], fa
         save_success_csq(current_csq)
         log(f"[완료] 이미 참여(최종 처리) → 영구 저장 완료: {current_csq}")
         result = "success"
-    elif current_csq and "참여 할 수 있는 횟수를 초과하여" in msg:
+    elif current_csq and ("횟수" in msg_nospace and "초과" in msg_nospace):
         # ⭐ 이 메시지는 "이 캠페인을 성공적으로 땄다"는 뜻이 아니라 계정 차원의 참여 횟수 제한일 수 있어서
         #    영구저장(success_csq)하면 안 됨 — 잘못 저장하면 실제로 못 딴 캠페인을 영원히 스킵하게 됨.
         if current_account_index == 0 and available_account_count >= 2:
@@ -820,7 +837,8 @@ def handle_result_alert(driver: webdriver.Chrome, current_csq: Optional[str], fa
             result = "retry_second"
         else:
             failed_once.add(current_csq)
-            log(f"[경고] 참여 횟수 초과(영구저장 안 함) → 이번 실행에서만 스킵: {current_csq}{name_tag}")
+            TARGET_BLOCKED.add(current_csq)      # 타겟이어도 같은 회차에서는 반복 시도하지 않음
+            log(f"[경고] 참여 횟수 초과(영구저장 안 함) → 새 회차가 뜰 때까지 이번 실행에서 건너뜀: {current_csq}{name_tag}")
             result = "fail"
     elif current_csq and "참여 가능한 시간이 아닙니다" in msg:
         log(f"[대기] 아직 오픈 시간이 아님(서버 알림) → 블랙리스트 제외 후 계속 감시: {current_csq}")
@@ -2307,6 +2325,9 @@ def scan_and_pick(driver: webdriver.Chrome, failed_once: set) -> Tuple[Optional[
                     if csq in success_csq:
                         log(f"[스킵] csq={csq} rsn=영구저장 완료")
                         continue
+                    if target_blocked_gate(csq, open_dt, secs_to_open):
+                        log(f"[스킵] csq={csq} rsn=참여횟수초과(새 회차 대기)")
+                        continue
                     # ⭐ 타겟은 이번실행 실패 목록에 있어도 완전히 포기하지 않고,
                     #    매 스캔마다 최신 오픈시간을 다시 확인해서 재도전함
                     #    (일반 후보와 달리 사용자가 직접 지정한 타겟이라 계속 챙김)
@@ -2536,6 +2557,7 @@ def main():
 
     driver = build_driver(headless=HEADLESS)
     failed_once = set()
+    TARGET_BLOCKED.clear()
 
     try:
         login_dbg(driver, email, password)
