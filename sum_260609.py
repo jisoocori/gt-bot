@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-LOGIC_LAST_MODIFIED = "2026-11-05 11:20"  # ⭐ 이 파일 수정할 때마다 갱신
+LOGIC_LAST_MODIFIED = "2026-11-13 01:29"  # ⭐ 이 파일 수정할 때마다 갱신
 
 import os
 import re
@@ -95,8 +95,13 @@ CONFIRM_CLICK_LEAD_SEC = 0.0       # 참여확인 클릭을 정각(네이버 시
                                    # 0.0 = 정각에 딱 맞춤(친구 프로그램과 동일). 로그의 [클릭] 줄(오픈 대비 +x.xxxs)과
                                    # 결과 메시지를 보면서 조정 — "참여 가능한 시간이 아닙니다"가 나오면 값을 줄이고,
                                    # 계속 "마감"이면 0.01~0.03 정도씩 늘려보세요.
-CONGESTION_RETRY_MAX       = 5     # "참여 요청이 많아 다시 참여" 메시지일 때 최대 재시도 횟수
+CONGESTION_RETRY_MAX       = 0     # "참여 요청이 많아 다시 참여" 메시지일 때 최대 재시도 횟수
 CONGESTION_RETRY_DELAY_SEC = 0.3   # 혼잡 재시도 간 대기 간격
+EARLY_RETRY_MAX            = 30    # 정각 직후 "참여 가능한 시간이 아닙니다"가 뜰 때 즉시 재시도 최대 횟수(정각 이후에만 발생)
+EARLY_RETRY_DELAY_SEC      = 0.05  # 그 재시도 간 대기
+REFRESH_RETRY_MAX          = 1     # "캠페인 화면을 새로고침한 후 다시 시도" 메시지가 뜰 때 새로고침 후 재시도 최대 횟수
+REFRESH_LEAD_MS_GUI: Optional[float] = None   # GUI '새로고침 선행(ms)'. None이면 click_tuning.txt(refresh_lead_ms) 사용
+START_DELAY_MS_GUI: Optional[float] = None   # GUI '정각 후 시작 지연(ms)'. None이면 click_tuning.txt(start_delay_ms) 사용
 
 MAX_SCROLL = 10
 HEADLESS = True
@@ -841,9 +846,11 @@ def handle_result_alert(driver: webdriver.Chrome, current_csq: Optional[str], fa
             log(f"[경고] 참여 횟수 초과(영구저장 안 함) → 새 회차가 뜰 때까지 이번 실행에서 건너뜀: {current_csq}{name_tag}")
             result = "fail"
     elif current_csq and "참여 가능한 시간이 아닙니다" in msg:
-        log(f"[대기] 아직 오픈 시간이 아님(서버 알림) → 블랙리스트 제외 후 계속 감시: {current_csq}")
-        log("[경고] 너무 일찍 도착했어요 — click_tuning.txt의 lead_ms를 낮춰보세요")
-        result = "fail"
+        log(f"[대기] 서버: 아직 참여할 수 있는 시간이 아님 → 정각 이후 즉시 재시도: {current_csq}")
+        result = "retry_too_early"
+    elif current_csq and "새로고침" in msg_nospace:
+        log(f"[대기] 서버: 화면 새로고침 요청 → 새로고침 후 재시도 대상: {current_csq}{name_tag}")
+        result = "retry_refresh"
     elif current_csq and ("참여 요청이 많아" in msg or "다시 참여" in msg):
         # ⭐ 서버가 명시적으로 재시도를 권하는 혼잡 메시지 → 실패 처리 대신 즉시 재시도하도록 신호
         log(f"[재시도] 서버 혼잡 메시지 감지 → 즉시 재시도: {current_csq}{name_tag}")
@@ -1197,7 +1204,7 @@ def process_immediate_join_flow(driver: webdriver.Chrome, csq: str, failed_once:
             if retry_result != "retry_congestion":
                 break
         else:
-            log(f"[경고] 즉시 참여 혼잡 재시도 {CONGESTION_RETRY_MAX}회 초과 → 포기: {csq}{name_tag}")
+            log(f"[경고] 즉시 참여 혼잡 재시도 한도({CONGESTION_RETRY_MAX}회) 도달 → 포기: {csq}{name_tag}")
             failed_once.add(csq)
 
     driver.get(LIST_URL)
@@ -1405,6 +1412,11 @@ def _precise_now() -> datetime:
 _TUNING_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "click_tuning.txt")
 _TUNING_DEFAULT_TEXT = """# 정각 클릭 튜닝 — 메모장으로 고치고 저장하면 다음 참여부터 바로 적용됩니다 (재시작 불필요)
 #
+# refresh_lead_ms : 상세 페이지 새로고침을 정각보다 몇 ms 일찍 시작할지(참여창 호출은 여전히 정각+시작지연 이후).
+#           0 = 정각에 새로고침. 너무 크면 '닫힘' 상태 페이지가 와서 거절될 수 있으니 조금씩 올리며 확인하세요.
+# start_delay_ms : 정각(네이버 시각) 이후 몇 ms 뒤에 참여창을 처음 열지. 0 = 정각 즉시.
+#           로그에 "시간 아님" 재시도가 계속 나오면 이 값을 조금씩(예: 20, 50, 100) 올리세요.
+#           ※ 정각 전에는 어떤 요청도 보내지 않습니다. 아래 lead_ms/inpage/auto_lead는 현재 무시됩니다.
 # lead_ms : 클릭을 정각보다 몇 ms 먼저 보낼지. 0 = 정각에 딱 맞춤, 숫자가 클수록 더 일찍 보냅니다.
 #           결과가 "너무 일찍 도착"으로 나오면 값을 낮추세요. (로그의 [튜닝] 줄 참고)
 # inpage  : 1 = 브라우저 안에서 정각에 직접 클릭 (파이썬→브라우저 전달 지연이 없어짐. 실전 검증 전)
@@ -1413,6 +1425,8 @@ _TUNING_DEFAULT_TEXT = """# 정각 클릭 튜닝 — 메모장으로 고치고 �
 # auto_lead : 1 = 측정한 서버 핑(왕복)의 절반(편도 지연)만큼 자동으로 더 일찍 클릭. 최종 lead = lead_ms + 핑/2
 #             (GUI의 '핑 자동 보정' 체크와 둘 중 하나만 켜져 있어도 적용됩니다)
 # auto_lead_cap_ms : 핑 보정으로 더해질 수 있는 최대값(ms). 핑이 튀어도 너무 일찍 누르지 않도록 하는 안전장치
+refresh_lead_ms = 0
+start_delay_ms = 0
 lead_ms = 0
 inpage = 0
 warmup = 1
@@ -1423,9 +1437,23 @@ _LAST_TIMED_CLICK: Optional[Dict] = None   # 마지막 정각 클릭 기록 ([�
 
 
 def _read_tuning() -> Dict:
+    """파일 값 + GUI 값을 합쳐 반환. (파일이 없거나 읽기 실패여도 GUI 값/고정 규칙은 항상 적용)"""
+    cfg = _read_tuning_file()
+    if START_DELAY_MS_GUI is not None:               # GUI 칸에 값이 있으면 파일 값보다 우선
+        cfg["start_delay_ms"] = max(0.0, min(5000.0, float(START_DELAY_MS_GUI)))
+    if REFRESH_LEAD_MS_GUI is not None:
+        cfg["refresh_lead_ms"] = max(0.0, min(3000.0, float(REFRESH_LEAD_MS_GUI)))
+    # 사이트가 정각 전 시도를 기록하므로 미리 보내는 기능(lead/핑보정/브라우저 예약)은 모두 끈다
+    cfg["lead_ms"] = 0.0
+    cfg["auto_lead"] = False
+    cfg["inpage"] = False
+    return cfg
+
+
+def _read_tuning_file() -> Dict:
     """click_tuning.txt를 읽어 {lead_ms, inpage, warmup, warn} 반환. 없으면 기본값으로 파일을 만들어 둠."""
     cfg = {"lead_ms": float(CONFIRM_CLICK_LEAD_SEC) * 1000.0, "inpage": False, "warmup": True, "warn": "",
-           "auto_lead": False, "auto_cap_ms": 80.0}
+           "auto_lead": False, "auto_cap_ms": 80.0, "start_delay_ms": 0.0, "refresh_lead_ms": 0.0}
     try:
         if not os.path.exists(_TUNING_FILE):
             try:
@@ -1458,12 +1486,14 @@ def _read_tuning() -> Dict:
                 cfg["warmup"] = val in ("1", "true", "on", "yes")
             elif key == "auto_lead":
                 cfg["auto_lead"] = val in ("1", "true", "on", "yes")
+            elif key == "refresh_lead_ms":
+                cfg["refresh_lead_ms"] = max(0.0, min(3000.0, float(val)))
+            elif key == "start_delay_ms":
+                cfg["start_delay_ms"] = max(0.0, min(5000.0, float(val)))
             elif key == "auto_lead_cap_ms":
                 cfg["auto_cap_ms"] = max(0.0, min(300.0, float(val)))
         except ValueError:
             cfg["warn"] += f"'{raw.strip()}' 줄을 읽지 못해 무시함. "
-    if LEAD_MS_GUI is not None:                      # GUI 칸에 값이 있으면 파일 값보다 우선
-        cfg["lead_ms"] = max(-100.0, min(500.0, float(LEAD_MS_GUI)))
     return cfg
 
 
@@ -1739,7 +1769,7 @@ def _log_tuning_summary(msg: str) -> None:
     if time.time() - rec.get("t", 0) > 15.0:      # 오래된 기록이 엉뚱한 결과에 붙지 않도록
         return
     if "참여 가능한 시간이 아닙니다" in msg:
-        label = "너무 일찍 도착 (서버: 아직 오픈 전) → lead를 낮추세요"
+        label = "시간 아님 (서버: 아직 오픈 전)"
     elif "참여 요청이 많아" in msg:
         label = "혼잡 (서버가 거절)"
     elif "캠페인에 참여 되었습니다" in msg:
@@ -2018,6 +2048,79 @@ def _save_abort_html(driver: webdriver.Chrome, csq: str, reason: str):
         log(f"[경고] abort HTML 저장 실패: {e}")
 
 
+def refresh_detail_page(driver, reason: str, target_open_dt: Optional[datetime] = None) -> bool:
+    """상세 페이지를 새로고침하고 로딩이 끝날 때까지(최대 4초) 기다린다. 끝나면 팝업 정리."""
+    t0 = time.perf_counter()
+    off = ""
+    if target_open_dt is not None:
+        off = f" (시작 시점 오픈 대비 {(_precise_now() - target_open_dt).total_seconds():+.3f}s)"
+    try:
+        driver.refresh()
+    except Exception as e:
+        log(f"[경고] 새로고침 실패({reason}): {e}")
+        return False
+    ok = False
+    while time.perf_counter() - t0 < 4.0:
+        try:
+            if driver.execute_script("return document.readyState") == "complete":
+                ok = True
+                break
+        except Exception:
+            pass
+        time.sleep(0.01)
+    try:
+        close_site_popups(driver, force=True)
+    except Exception:
+        pass
+    spent = int((time.perf_counter() - t0) * 1000)
+    end = ""
+    if target_open_dt is not None:
+        end = f" → 완료 시점 오픈 대비 {(_precise_now() - target_open_dt).total_seconds():+.3f}s"
+    log(f"[새로고침] {reason}{off}{end}, 소요 {spent}ms{'' if ok else ' (로딩 완료 확인 못함)'}")
+    return ok
+
+
+_WAIT_LOG_LAST: Dict = {}   # 타겟 대기 로그 도배 방지(csq별 마지막 출력 시각)
+_GATE_STATE: Dict = {"csq": None, "warmed": False, "synced": False}
+
+
+def open_gate_ready(driver, target_open_dt: Optional[datetime], csq: str, use_delay: bool = True, lead_s: float = 0.0) -> bool:
+    """정각(네이버 시각)+시작지연이 지났으면 True. 그 전에는 어떤 요청도 보내지 않고 False.
+    남은 시간이 3초 이하일 때만 이 함수 안에서 직접 기다린다(동기화·예열·마지막 구간 busy-wait)."""
+    if target_open_dt is None:
+        return True
+    tun = _read_tuning()
+    delay = (tun["start_delay_ms"] / 1000.0 if use_delay else 0.0) - lead_s
+    st = _GATE_STATE
+    if st["csq"] != csq:
+        st.update(csq=csq, warmed=False, synced=False)
+    remain = (target_open_dt - _precise_now()).total_seconds() + delay
+    if remain <= 0:
+        return True
+    if remain > 3.0:
+        if remain <= 15.0 and not st["synced"] and not _naver_clock.Fresh:
+            st["synced"] = True
+            _sync_naver_clock("정각 직전")
+        return False
+    if not st["synced"] and not _naver_clock.Fresh:
+        st["synced"] = True
+        _sync_naver_clock("정각 직전")
+    while True:
+        pause_point()
+        remain = (target_open_dt - _precise_now()).total_seconds() + delay
+        if remain <= 0:
+            return True
+        if tun["warmup"] and driver is not None and not st["warmed"] and 1.2 < remain <= 3.0:
+            st["warmed"] = True
+            _warm_connection(driver)
+        if remain > 1.0:
+            time.sleep(0.1)
+        elif remain > 0.1:
+            time.sleep(0.01)
+        elif remain > 0.02:
+            time.sleep(0.001)
+
+
 def wait_and_apply_in_detail(driver: webdriver.Chrome, current_csq: str, failed_once: set, target_open_dt: Optional[datetime], is_target: bool = False, campaign_name: str = "") -> bool:
     t0 = time.time()
     detail_url = driver.current_url
@@ -2029,6 +2132,14 @@ def wait_and_apply_in_detail(driver: webdriver.Chrome, current_csq: str, failed_
     account_try_index = 0
     account_count_hint = 0
     congestion_retry_count = 0
+    early_retry_count = 0
+    refresh_retry_count = 0
+    need_open_refresh = False   # 오픈 전에 열어둔 페이지는 정각 이후 한 번 새로고침해서 사용
+    if target_open_dt is not None:
+        try:
+            need_open_refresh = (target_open_dt - _precise_now()).total_seconds() > 0
+        except Exception:
+            need_open_refresh = False
     sec_to_open: Optional[float] = None  # ⭐ 오픈까지 남은 시간(적응형 폴링 간격 계산용)
     name_tag = f" [{campaign_name}]" if campaign_name else ""
 
@@ -2058,7 +2169,11 @@ def wait_and_apply_in_detail(driver: webdriver.Chrome, current_csq: str, failed_
                     close_site_popups(driver, force=True)
                     return False
                 if is_target and sec_to_open > 0:
-                    log(f"[타겟 대기중] csq={current_csq}{name_tag} 오픈까지 {int(sec_to_open)}초 남음")
+                    _now_m = time.monotonic()
+                    _gap = 1.0 if sec_to_open <= 10 else (5.0 if sec_to_open <= 120 else 30.0)
+                    if _now_m - _WAIT_LOG_LAST.get(current_csq, 0.0) >= _gap:
+                        _WAIT_LOG_LAST[current_csq] = _now_m
+                        log(f"[타겟 대기중] csq={current_csq}{name_tag} 오픈까지 {int(sec_to_open)}초 남음")
         except Exception:
             pass
 
@@ -2075,6 +2190,27 @@ def wait_and_apply_in_detail(driver: webdriver.Chrome, current_csq: str, failed_
                 confirm_armed = False
                 time.sleep(0.10)
                 continue
+            if alert_result == "retry_refresh":
+                refresh_retry_count += 1
+                if refresh_retry_count <= REFRESH_RETRY_MAX:
+                    log(f"[재시도] 새로고침 후 재시도 {refresh_retry_count}/{REFRESH_RETRY_MAX}: {current_csq}{name_tag}")
+                    refresh_detail_page(driver, "서버 요청으로 새로고침", target_open_dt)
+                    prejoin_started = False
+                    confirm_armed = False
+                    continue
+                log(f"[경고] 새로고침 재시도 한도({REFRESH_RETRY_MAX}회) 도달 → 포기: {current_csq}{name_tag}")
+                failed_once.add(current_csq)
+            if alert_result == "retry_too_early":
+                early_retry_count += 1
+                off = (_precise_now() - target_open_dt).total_seconds() if target_open_dt else 0.0
+                log(f"[재시도] 시간 아님 #{early_retry_count}/{EARLY_RETRY_MAX} (오픈 대비 {off:+.3f}s, 시작지연 {_read_tuning()['start_delay_ms']:g}ms): {current_csq}{name_tag}")
+                if early_retry_count <= EARLY_RETRY_MAX:
+                    time.sleep(EARLY_RETRY_DELAY_SEC)
+                    prejoin_started = False
+                    confirm_armed = False
+                    continue
+                log(f"[경고] 시간 아님 재시도 {EARLY_RETRY_MAX}회 도달 → 포기: {current_csq}{name_tag}")
+                failed_once.add(current_csq)
             if alert_result == "retry_congestion":
                 congestion_retry_count += 1
                 if congestion_retry_count <= CONGESTION_RETRY_MAX:
@@ -2084,7 +2220,7 @@ def wait_and_apply_in_detail(driver: webdriver.Chrome, current_csq: str, failed_
                     confirm_armed = False
                     continue
                 else:
-                    log(f"[경고] 혼잡 재시도 {CONGESTION_RETRY_MAX}회 초과 → 포기: {current_csq}{name_tag}")
+                    log(f"[경고] 혼잡 재시도 한도({CONGESTION_RETRY_MAX}회) 도달 → 포기: {current_csq}{name_tag}")
                     failed_once.add(current_csq)
             driver.get(LIST_URL)
             time.sleep(0.5)
@@ -2119,7 +2255,16 @@ def wait_and_apply_in_detail(driver: webdriver.Chrome, current_csq: str, failed_
             continue
 
         now = time.time()
-        if not prejoin_started or (now - last_prejoin_try >= PREJOIN_RETRY_SEC):
+        if need_open_refresh:
+            _rl = _read_tuning()["refresh_lead_ms"] / 1000.0
+            if open_gate_ready(driver, target_open_dt, current_csq, use_delay=False, lead_s=_rl):
+                need_open_refresh = False
+                refresh_detail_page(driver, f"정각 {'%.0fms 전' % (_rl*1000) if _rl > 0 else '직후'} 새로고침", target_open_dt)
+                prejoin_started = False
+                confirm_armed = False
+                continue
+        gate_ok = open_gate_ready(driver, target_open_dt, current_csq)
+        if gate_ok and (not prejoin_started or (now - last_prejoin_try >= PREJOIN_RETRY_SEC)):
             last_prejoin_try = now
             opened = try_open_join_without_button_search(driver, current_csq)
             if not opened:
@@ -2132,6 +2277,11 @@ def wait_and_apply_in_detail(driver: webdriver.Chrome, current_csq: str, failed_
 
                 kind = wait_for_post_join_event(driver, timeout=2.0)
                 log(f"[감지] 선대기 JOIN 후 이벤트 감지: {kind or 'none'} (csq={current_csq})")
+                if kind in ("accounts", "confirm") and target_open_dt is not None:
+                    _off = (_precise_now() - target_open_dt).total_seconds()
+                    log(f"[튜닝] 참여창 열림: 오픈 대비 {_off:+.3f}s | 시작지연 {_read_tuning()['start_delay_ms']:g}ms | "
+                        f"시간 아님 재시도 {early_retry_count}회"
+                        + (" → 재시도가 잦으면 시작 지연을 올려보세요" if early_retry_count >= 3 else ""))
 
                 if kind == "alert" and is_alert_modal_showing(driver):
                     alert_result = handle_result_alert(
@@ -2146,6 +2296,27 @@ def wait_and_apply_in_detail(driver: webdriver.Chrome, current_csq: str, failed_
                         confirm_armed = False
                         time.sleep(0.10)
                         continue
+                    if alert_result == "retry_refresh":
+                        refresh_retry_count += 1
+                        if refresh_retry_count <= REFRESH_RETRY_MAX:
+                            log(f"[재시도] 새로고침 후 재시도 {refresh_retry_count}/{REFRESH_RETRY_MAX}: {current_csq}{name_tag}")
+                            refresh_detail_page(driver, "서버 요청으로 새로고침", target_open_dt)
+                            prejoin_started = False
+                            confirm_armed = False
+                            continue
+                        log(f"[경고] 새로고침 재시도 한도({REFRESH_RETRY_MAX}회) 도달 → 포기: {current_csq}{name_tag}")
+                        failed_once.add(current_csq)
+                    if alert_result == "retry_too_early":
+                        early_retry_count += 1
+                        off = (_precise_now() - target_open_dt).total_seconds() if target_open_dt else 0.0
+                        log(f"[재시도] 시간 아님 #{early_retry_count}/{EARLY_RETRY_MAX} (오픈 대비 {off:+.3f}s, 시작지연 {_read_tuning()['start_delay_ms']:g}ms): {current_csq}{name_tag}")
+                        if early_retry_count <= EARLY_RETRY_MAX:
+                            time.sleep(EARLY_RETRY_DELAY_SEC)
+                            prejoin_started = False
+                            confirm_armed = False
+                            continue
+                        log(f"[경고] 시간 아님 재시도 {EARLY_RETRY_MAX}회 도달 → 포기: {current_csq}{name_tag}")
+                        failed_once.add(current_csq)
                     if alert_result == "retry_congestion":
                         congestion_retry_count += 1
                         if congestion_retry_count <= CONGESTION_RETRY_MAX:
@@ -2155,7 +2326,7 @@ def wait_and_apply_in_detail(driver: webdriver.Chrome, current_csq: str, failed_
                             confirm_armed = False
                             continue
                         else:
-                            log(f"[경고] 혼잡 재시도 {CONGESTION_RETRY_MAX}회 초과 → 포기: {current_csq}{name_tag}")
+                            log(f"[경고] 혼잡 재시도 한도({CONGESTION_RETRY_MAX}회) 도달 → 포기: {current_csq}{name_tag}")
                             failed_once.add(current_csq)
                     goto_list_page(driver, force_get=True)
                     time.sleep(0.35)
